@@ -4,11 +4,16 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronUp,
   MessageSquare,
   PlusCircle,
+  Scale,
   Settings2,
 } from 'lucide-react';
+import { buildQueryFromPool, findCompetingPoolCounts } from '../domain/competingPoolsEngine.ts';
 import { canManagePool, evaluateMemberEligibility } from '../domain/tallyEngine.ts';
+import type { SimilarPoolCandidate } from '../domain/types.ts';
 import { ApiRequestError, useTally } from '../lib/api.ts';
 import {
   formatCalendarDate,
@@ -19,6 +24,7 @@ import {
   getStageLabel,
 } from '../lib/format.ts';
 import { Link, useRouter } from '../lib/router.tsx';
+import { CompetingPoolsComparison } from '../components/CompetingPoolsComparison.tsx';
 import { PoolImage } from '../components/PoolImage.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
 
@@ -30,6 +36,7 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
     joinPoolAction,
     leavePoolAction,
     postDiscussionAction,
+    findSimilarPoolsAction,
     showBanner,
   } = useTally();
   const { lastExploreUrl, navigate } = useRouter();
@@ -41,6 +48,17 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
     () => pool?.members.find((m) => m.userId === actorId),
     [pool, actorId]
   );
+
+  // Competing pools comparison on Pool Detail
+  const competingCount = useMemo(() => {
+    if (!session || !pool) return 0;
+    const counts = findCompetingPoolCounts(session.pools, session.demoNow);
+    return counts[pool.id] ?? 0;
+  }, [session, pool]);
+  const [compareExpanded, setCompareExpanded] = useState(false);
+  const [compareCandidates, setCompareCandidates] = useState<SimilarPoolCandidate[]>([]);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
 
   // Form state for joining / editing preferences
   const [showJoinForm, setShowJoinForm] = useState(false);
@@ -157,7 +175,36 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
       setSelectedOptions(defaults);
       setMemberNote('');
     }
+    setCompareExpanded(false);
+    setCompareCandidates([]);
+    setCompareError(null);
   }, [pool?.id, existingMember?.id, existingMember?.quantity]);
+
+  const loadSimilarForDetail = async () => {
+    if (!pool) return;
+    setCompareLoading(true);
+    setCompareError(null);
+    try {
+      const res = await findSimilarPoolsAction(buildQueryFromPool(pool));
+      setCompareCandidates(res.candidates);
+    } catch (err) {
+      setCompareError(
+        err instanceof ApiRequestError
+          ? err.error.message
+          : 'Could not load similar pools right now.'
+      );
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  const handleToggleCompare = () => {
+    const next = !compareExpanded;
+    setCompareExpanded(next);
+    if (next) {
+      void loadSimilarForDetail();
+    }
+  };
 
   if (!pool) {
     return (
@@ -363,6 +410,55 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
           </Link>
         )}
       </div>
+
+      {/* Same-Item Competing Pools Banner (only shown when real similar pools exist in session) */}
+      {competingCount > 0 && (
+        <section
+          aria-label="Compare similar buying pools"
+          className="bg-[#F6F1E5] border border-[#152B23]/40 p-3.5 sm:p-4 space-y-3"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-start sm:items-center gap-2 text-xs text-[#152B23]">
+              <Scale className="w-4 h-4 text-[#152B23] shrink-0 mt-0.5 sm:mt-0" aria-hidden="true" />
+              <span>
+                <strong>
+                  {competingCount} other similar {competingCount === 1 ? 'pool' : 'pools'}
+                </strong>{' '}
+                for this item {competingCount === 1 ? 'exists' : 'exist'} in this session. Compare
+                buyer momentum, location, timing, and published quotes before deciding.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleCompare}
+              aria-expanded={compareExpanded}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-[#152B23] text-[#152B23] hover:text-white border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+            >
+              <span>{compareExpanded ? 'Hide comparison' : `Compare ${competingCount} similar`}</span>
+              {compareExpanded ? (
+                <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+              )}
+            </button>
+          </div>
+
+          {compareExpanded && (
+            <div className="pt-2 border-t border-[#C6D8CE]">
+              <CompetingPoolsComparison
+                candidates={compareCandidates}
+                loading={compareLoading}
+                error={compareError}
+                onRetry={() => void loadSimilarForDetail()}
+                onRefreshCandidates={() => void loadSimilarForDetail()}
+                referencePool={pool}
+                emptyTitle="No other similar pools found"
+                emptyDescription="No other pools currently match this item in your session."
+              />
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Asymmetric 2-Column Layout — Mobile places Tally Ticket & Primary CTA ABOVE specs/discussion */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">

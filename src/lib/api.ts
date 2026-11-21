@@ -1,6 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ActivityEvent,
+  AlertNotification,
+  CreateItemAlertInput,
   CreatePoolInput,
   DemoScenarioId,
   DomainActionError,
@@ -9,11 +11,21 @@ import type {
   Pool,
   PoolMetrics,
   PublishOfferInput,
+  SavedItemAlert,
   SellerOffer,
+  SimilarPoolCandidate,
+  SimilarPoolQueryInput,
+  UpdateItemAlertInput,
 } from '../domain/types.ts';
 
 export interface ClientPool extends Pool {
   metrics: PoolMetrics;
+}
+
+export interface SimilarPoolsResponse {
+  candidates: SimilarPoolCandidate[];
+  checkedPoolCount: number;
+  checkedAt: string;
 }
 
 export interface ClientActor {
@@ -32,6 +44,9 @@ export interface ClientSessionResponse {
   actor: ClientActor;
   pools: ClientPool[];
   activity: ActivityEvent[];
+  alerts: SavedItemAlert[];
+  notifications: AlertNotification[];
+  unreadAlertCount: number;
   updatedAt: string;
 }
 
@@ -124,6 +139,7 @@ interface TallyContextValue {
   refresh: () => Promise<void>;
   loadScenario: (scenarioId: DemoScenarioId) => Promise<void>;
   resetDemo: () => Promise<void>;
+  findSimilarPoolsAction: (input: SimilarPoolQueryInput) => Promise<SimilarPoolsResponse>;
   createPoolAction: (input: CreatePoolInput) => Promise<string>;
   joinPoolAction: (poolId: string, input: JoinPoolInput) => Promise<void>;
   leavePoolAction: (poolId: string) => Promise<void>;
@@ -148,6 +164,10 @@ interface TallyContextValue {
   fetchClaimPass: (poolId: string) => Promise<ClaimPassResponse>;
   markFulfilledAction: (poolId: string) => Promise<void>;
   toggleFollowAction: (poolId: string) => Promise<boolean>;
+  createAlertAction: (input: CreateItemAlertInput) => Promise<SavedItemAlert>;
+  updateAlertAction: (alertId: string, input: UpdateItemAlertInput) => Promise<SavedItemAlert>;
+  markNotificationReadAction: (notificationId: string) => Promise<AlertNotification>;
+  markAllNotificationsReadAction: () => Promise<number>;
   simulateConfirmAction: (poolId?: string) => Promise<{ unlockedNow: boolean; simulatedLabel: string }>;
   advanceClockAction: (poolId?: string) => Promise<void>;
   simulateRevisionAction: (poolId?: string) => Promise<SellerOffer>;
@@ -311,6 +331,16 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       showBanner('info', `Reset session ${sessionId} back to its clean seed state.`);
     });
   }, [apiFetch, runMutation, sessionId, showBanner]);
+
+  const findSimilarPoolsAction = useCallback(
+    async (input: SimilarPoolQueryInput) => {
+      return apiFetch<SimilarPoolsResponse>('/api/pools/similar', {
+        method: 'POST',
+        body: input,
+      });
+    },
+    [apiFetch]
+  );
 
   const createPoolAction = useCallback(
     async (input: CreatePoolInput) => {
@@ -531,6 +561,61 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
     [apiFetch, runMutation, showBanner]
   );
 
+  const createAlertAction = useCallback(
+    async (input: CreateItemAlertInput) => {
+      return runMutation(async () => {
+        const res = await apiFetch<{ alert: SavedItemAlert; session: ClientSessionResponse }>(
+          '/api/alerts',
+          { method: 'POST', body: input }
+        );
+        setSession(res.session);
+        return res.alert;
+      });
+    },
+    [apiFetch, runMutation]
+  );
+
+  const updateAlertAction = useCallback(
+    async (alertId: string, input: UpdateItemAlertInput) => {
+      return runMutation(async () => {
+        const res = await apiFetch<{ alert: SavedItemAlert; session: ClientSessionResponse }>(
+          `/api/alerts/${encodeURIComponent(alertId)}`,
+          { method: 'PATCH', body: input }
+        );
+        setSession(res.session);
+        return res.alert;
+      });
+    },
+    [apiFetch, runMutation]
+  );
+
+  const markNotificationReadAction = useCallback(
+    async (notificationId: string) => {
+      return runMutation(async () => {
+        const res = await apiFetch<{
+          notification: AlertNotification;
+          session: ClientSessionResponse;
+        }>(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+          method: 'POST',
+        });
+        setSession(res.session);
+        return res.notification;
+      });
+    },
+    [apiFetch, runMutation]
+  );
+
+  const markAllNotificationsReadAction = useCallback(async () => {
+    return runMutation(async () => {
+      const res = await apiFetch<{ markedCount: number; session: ClientSessionResponse }>(
+        '/api/notifications/read-all',
+        { method: 'POST' }
+      );
+      setSession(res.session);
+      return res.markedCount;
+    });
+  }, [apiFetch, runMutation]);
+
   const simulateConfirmAction = useCallback(
     async (poolId = 'pool-maverick-xlt') => {
       return runMutation(async () => {
@@ -604,6 +689,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       refresh: () => fetchSession(sessionId, role, true),
       loadScenario,
       resetDemo,
+      findSimilarPoolsAction,
       createPoolAction,
       joinPoolAction,
       leavePoolAction,
@@ -618,6 +704,10 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       fetchClaimPass,
       markFulfilledAction,
       toggleFollowAction,
+      createAlertAction,
+      updateAlertAction,
+      markNotificationReadAction,
+      markAllNotificationsReadAction,
       simulateConfirmAction,
       advanceClockAction,
       simulateRevisionAction,
@@ -638,6 +728,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       fetchSession,
       loadScenario,
       resetDemo,
+      findSimilarPoolsAction,
       createPoolAction,
       joinPoolAction,
       leavePoolAction,
@@ -652,6 +743,10 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       fetchClaimPass,
       markFulfilledAction,
       toggleFollowAction,
+      createAlertAction,
+      updateAlertAction,
+      markNotificationReadAction,
+      markAllNotificationsReadAction,
       simulateConfirmAction,
       advanceClockAction,
       simulateRevisionAction,

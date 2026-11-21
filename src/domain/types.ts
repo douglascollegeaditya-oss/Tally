@@ -150,9 +150,52 @@ export interface ActivityEvent {
   isSimulated?: boolean;
 }
 
+export type ItemAlertStatus = 'active' | 'paused' | 'archived';
+
+export interface SavedItemAlert {
+  id: string;
+  ownerId: string;
+  query: string;
+  category?: PoolCategory;
+  city?: string;
+  status: ItemAlertStatus;
+  createdAt: string;
+  updatedAt: string;
+  pausedAt?: string;
+  archivedAt?: string;
+  lastActivatedAt: string;
+}
+
+export interface AlertNotification {
+  id: string;
+  ownerId: string;
+  poolId: string;
+  poolTitle: string;
+  poolCategory: PoolCategory;
+  poolLocation: string;
+  matchedAlertIds: string[];
+  matchedAlertSummary: string;
+  createdAt: string;
+  readAt?: string;
+}
+
+export interface CreateItemAlertInput {
+  query: string;
+  category?: PoolCategory | '';
+  city?: string;
+}
+
+export interface UpdateItemAlertInput {
+  query?: string;
+  category?: PoolCategory | '' | null;
+  city?: string | null;
+  status?: ItemAlertStatus;
+}
+
 export interface Pool {
   id: string;
   slug: string;
+  clientRequestId?: string;
   title: string;
   subtitle: string;
   category: PoolCategory;
@@ -217,6 +260,8 @@ export interface DemoSessionState {
   demoNow: string;
   pools: Pool[];
   activity: ActivityEvent[];
+  alerts: SavedItemAlert[];
+  notifications: AlertNotification[];
   createdAt: string;
   updatedAt: string;
 }
@@ -228,6 +273,7 @@ export interface JoinPoolInput {
 }
 
 export interface CreatePoolInput {
+  clientRequestId?: string;
   title: string;
   subtitle?: string;
   category: PoolCategory;
@@ -269,6 +315,7 @@ export interface DomainActionError {
     | 'NOT_FOUND'
     | 'FORBIDDEN_ROLE'
     | 'VALIDATION_ERROR'
+    | 'DUPLICATE_ALERT'
     | 'INVALID_STAGE'
     | 'INELIGIBLE_MEMBER'
     | 'STALE_OFFER_VERSION'
@@ -293,3 +340,65 @@ export interface EngineFailure {
 }
 
 export type EngineOutcome<T> = EngineResult<T> | EngineFailure;
+
+export type SimilarPoolMatchLevel =
+  | 'strong_match'
+  | 'same_item_different_terms'
+  | 'possible_match';
+
+export type SimilarPoolAvailability =
+  | 'joinable'
+  | 'offer_review_only'
+  | 'unlocked'
+  | 'ended';
+
+export interface SimilarPoolQueryInput {
+  category?: PoolCategory;
+  title: string;
+  location?: string;
+  goalDate?: string;
+  modelOrVariant?: string;
+  primaryOptionValues?: string[];
+  categorySpecs?: PoolSpecField[];
+  excludePoolId?: string;
+  includeUnavailable?: boolean;
+}
+
+export interface SimilarPoolQuoteSummary {
+  hasQuote: boolean;
+  statusLabel: string;
+  version?: number;
+  sellerName?: string;
+  sellerLocation?: string;
+  unitPrice?: number;
+  knownFees?: number;
+  feeLabel?: string;
+  subtotal?: number;
+  minQuantity?: number;
+  maxQuantity?: number;
+  matchingScope?: string;
+  fulfillmentMethod?: string;
+  taxAndRegistrationNote?: string;
+  closeAt?: string;
+  timezoneLabel?: string;
+  claimByDate?: string;
+}
+
+export interface SimilarPoolCandidate {
+  pool: Pool & { metrics: PoolMetrics };
+  matchLevel: SimilarPoolMatchLevel;
+  matchLabel: string;
+  score: number;
+  matchedTerms: string[];
+  matchReasons: string[];
+  differences: string[];
+  locationFit: 'match' | 'nationwide' | 'different' | 'unspecified';
+  timingFit: 'close' | 'moderate' | 'far' | 'unspecified';
+  timingDeltaDays: number | null;
+  availability: SimilarPoolAvailability;
+  canQuickJoin: boolean;
+  alreadyMember: boolean;
+  alreadyOrganizer: boolean;
+  quoteSummary: SimilarPoolQuoteSummary;
+}
+

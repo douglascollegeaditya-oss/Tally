@@ -1,7 +1,13 @@
-import { useMemo } from 'react';
-import { ArrowRight, Bookmark, Check, MapPin, Search, X } from 'lucide-react';
-import { POOL_CATEGORIES, type PoolCategory } from '../domain/types.ts';
-import { type ClientPool, useTally } from '../lib/api.ts';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRight, BellPlus, Bookmark, Check, MapPin, Scale, Search, X } from 'lucide-react';
+import { buildQueryFromPool, findCompetingPoolCounts } from '../domain/competingPoolsEngine.ts';
+import {
+  POOL_CATEGORIES,
+  type PoolCategory,
+  type SimilarPoolCandidate,
+  type SimilarPoolQueryInput,
+} from '../domain/types.ts';
+import { ApiRequestError, type ClientPool, useTally } from '../lib/api.ts';
 import {
   formatCalendarDate,
   formatCurrency,
@@ -11,6 +17,10 @@ import {
   getStageToneClasses,
 } from '../lib/format.ts';
 import { Link, useRouter } from '../lib/router.tsx';
+import {
+  CompetingPoolsComparison,
+  type ComparisonQuerySummary,
+} from '../components/CompetingPoolsComparison.tsx';
 import { LOCATION_OPTIONS } from '../components/Layout.tsx';
 import { PoolImage } from '../components/PoolImage.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
@@ -123,13 +133,25 @@ function getMeterState(pool: ClientPool) {
 }
 
 export function ExplorePage() {
-  const { session, role, busy, toggleFollowAction } = useTally();
+  const { session, role, busy, toggleFollowAction, findSimilarPoolsAction } = useTally();
   const { searchParams, navigate } = useRouter();
 
   const query = searchParams.get('q') ?? '';
   const category = (searchParams.get('cat') as PoolCategory | 'All' | null) ?? 'All';
   const location = searchParams.get('loc') ?? 'All locations';
   const stageFilter = (searchParams.get('stage') as StageFilter | null) ?? 'all';
+
+  // Competing pools comparison drawer/panel state
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareRefPoolId, setCompareRefPoolId] = useState<string | null>(null);
+  const [compareQueryInput, setCompareQueryInput] = useState<SimilarPoolQueryInput | null>(null);
+  const [compareQuerySummary, setCompareQuerySummary] = useState<ComparisonQuerySummary | null>(
+    null
+  );
+  const [compareCandidates, setCompareCandidates] = useState<SimilarPoolCandidate[]>([]);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const compareHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
   const updateParams = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
@@ -199,6 +221,84 @@ export function ExplorePage() {
 
   const featuredMeter = featuredPool ? getMeterState(featuredPool) : null;
   const featuredFollowing = featuredPool ? featuredPool.followers.includes(actorId) : false;
+  const trimmedQuery = query.trim();
+
+  // Pre-fills item query and selected category only; city stays an explicit optional field on Alerts
+  const createAlertHref = useMemo(() => {
+    const params = new URLSearchParams({ create: '1' });
+    if (trimmedQuery) params.set('q', trimmedQuery);
+    if (category !== 'All') params.set('cat', category);
+    return `/alerts?${params.toString()}`;
+  }, [trimmedQuery, category]);
+
+  const startPoolHref = useMemo(() => {
+    const params = new URLSearchParams();
+    if (trimmedQuery) params.set('q', trimmedQuery);
+    if (category !== 'All') params.set('cat', category);
+    const qs = params.toString();
+    return qs ? `/start?${qs}` : '/start';
+  }, [trimmedQuery, category]);
+
+  const competingCounts = useMemo(
+    () => findCompetingPoolCounts(pools, session?.demoNow ?? ''),
+    [pools, session?.demoNow]
+  );
+
+  const compareRefPool = useMemo(
+    () => (compareRefPoolId ? pools.find((p) => p.id === compareRefPoolId) ?? null : null),
+    [pools, compareRefPoolId]
+  );
+
+  const executeComparison = async (input: SimilarPoolQueryInput) => {
+    setCompareLoading(true);
+    setCompareError(null);
+    try {
+      const res = await findSimilarPoolsAction(input);
+      setCompareCandidates(res.candidates);
+    } catch (err) {
+      setCompareError(
+        err instanceof ApiRequestError
+          ? err.error.message
+          : 'Could not compare pools right now.'
+      );
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  const openPoolComparison = (pool: ClientPool) => {
+    const input = buildQueryFromPool(pool);
+    setCompareRefPoolId(pool.id);
+    setCompareQueryInput(input);
+    setCompareQuerySummary(null);
+    setCompareOpen(true);
+    void executeComparison(input);
+  };
+
+  const openSearchComparison = () => {
+    if (!trimmedQuery) return;
+    const input: SimilarPoolQueryInput = {
+      title: trimmedQuery,
+      category: category !== 'All' ? category : undefined,
+      location: location !== 'All locations' ? location : undefined,
+      includeUnavailable: true,
+    };
+    setCompareRefPoolId(null);
+    setCompareQueryInput(input);
+    setCompareQuerySummary({
+      title: trimmedQuery,
+      category: category !== 'All' ? category : undefined,
+      location: location !== 'All locations' ? location : undefined,
+    });
+    setCompareOpen(true);
+    void executeComparison(input);
+  };
+
+  useEffect(() => {
+    if (compareOpen) {
+      compareHeadingRef.current?.focus();
+    }
+  }, [compareOpen, compareRefPoolId]);
 
   return (
     <div className="space-y-6">
@@ -334,8 +434,86 @@ export function ExplorePage() {
               </button>
             )}
           </div>
+
+          {/* Typed search prompt: compare matching pools side-by-side or save an item alert */}
+          {trimmedQuery.length > 0 && filteredPools.length > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 bg-[#F6F1E5] border border-[#C6D8CE]">
+              <p className="text-xs text-[#152B23]">
+                Comparing or watching for{' '}
+                <strong>&ldquo;{trimmedQuery}&rdquo;</strong>
+                {category !== 'All' ? ` (${category})` : ''}? Compare momentum and published quotes,
+                or get an in-app alert when a new pool opens.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={openSearchComparison}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer transition-colors"
+                >
+                  <Scale className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Compare matching pools</span>
+                </button>
+                <Link
+                  to={createAlertHref}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-[#152B23] text-[#152B23] hover:text-white border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors"
+                >
+                  <BellPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Create item alert</span>
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
       </section>
+
+      {/* Same-Item Competing Pools Comparison Panel */}
+      {compareOpen && (
+        <section
+          aria-label="Compare similar buying pools"
+          className="bg-white border-2 border-[#152B23] shadow-[4px_4px_0px_#152B23] p-5 sm:p-6 space-y-4"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b border-[#C6D8CE]">
+            <div>
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#516B61]">
+                Same-item pool comparison
+              </p>
+              <h2
+                ref={compareHeadingRef}
+                tabIndex={-1}
+                className="font-display text-xl sm:text-2xl text-[#152B23] uppercase focus:outline-none"
+              >
+                {compareRefPool
+                  ? `Pools similar to ${compareRefPool.title}`
+                  : `Matching pools for "${compareQuerySummary?.title ?? trimmedQuery}"`}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCompareOpen(false)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[#C6D8CE] hover:border-[#152B23] font-mono text-[11px] uppercase text-[#152B23] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Close comparison</span>
+            </button>
+          </div>
+
+          <CompetingPoolsComparison
+            candidates={compareCandidates}
+            loading={compareLoading}
+            error={compareError}
+            onRetry={() => {
+              if (compareQueryInput) void executeComparison(compareQueryInput);
+            }}
+            onRefreshCandidates={() => {
+              if (compareQueryInput) void executeComparison(compareQueryInput);
+            }}
+            referencePool={compareRefPool}
+            querySummary={compareQuerySummary}
+            emptyTitle="No credible same-item matches found"
+            emptyDescription="No pools in this session matched those exact item terms, category, and options. Try refining your search or starting a new pool."
+          />
+        </section>
+      )}
 
       {/* No Results State */}
       {filteredPools.length === 0 ? (
@@ -347,26 +525,36 @@ export function ExplorePage() {
             0 matching buying pools
           </p>
           <h2 className="font-display text-2xl text-[#152B23] uppercase">
-            No pools match these filters yet
+            {trimmedQuery
+              ? `No pools match "${trimmedQuery}" yet`
+              : 'No pools match these filters yet'}
           </h2>
           <p className="text-sm text-[#516B61] max-w-md mx-auto">
-            Try clearing your search or location filter, or start a new neighborhood pool with your
-            exact specifications.
+            {trimmedQuery
+              ? 'Save an item alert to get an in-app notification when a matching buying pool opens, or start a new pool yourself.'
+              : 'Try clearing your search or location filter, create an item alert, or start a new neighborhood pool with your exact specifications.'}
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-            <button
-              type="button"
-              onClick={resetFilters}
-              className="px-4 py-2.5 bg-white border border-[#152B23] text-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider hover:bg-[#F6F1E5] cursor-pointer"
-            >
-              Reset all filters
-            </button>
             <Link
-              to="/start"
-              className="px-4 py-2.5 bg-[#FFBF32] hover:bg-[#F2B01E] border border-[#152B23] text-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider"
+              to={createAlertHref}
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-[#FFBF32] hover:bg-[#F2B01E] border border-[#152B23] text-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider"
+            >
+              <BellPlus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Create item alert</span>
+            </Link>
+            <Link
+              to={startPoolHref}
+              className="px-4 py-2.5 bg-[#152B23] hover:bg-[#28463B] border border-[#152B23] text-white font-mono text-xs font-semibold uppercase tracking-wider"
             >
               Start a new pool
             </Link>
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="px-4 py-2.5 bg-white border border-[#C6D8CE] hover:border-[#152B23] text-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider hover:bg-[#F6F1E5] cursor-pointer"
+            >
+              Reset all filters
+            </button>
           </div>
         </section>
       ) : (
@@ -482,6 +670,20 @@ export function ExplorePage() {
                       )}
                     </button>
                   </div>
+
+                  {(competingCounts[featuredPool.id] ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => openPoolComparison(featuredPool)}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#F6F1E5] hover:bg-[#152B23] text-[#152B23] hover:text-white border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider transition-colors cursor-pointer"
+                    >
+                      <Scale className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>
+                        Compare with {competingCounts[featuredPool.id]} similar{' '}
+                        {competingCounts[featuredPool.id] === 1 ? 'pool' : 'pools'}
+                      </span>
+                    </button>
+                  )}
                 </div>
               </div>
             </article>
@@ -594,17 +796,32 @@ export function ExplorePage() {
                             compact
                           />
 
-                          <Link
-                            to={dest}
-                            className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 border font-mono text-[11px] font-semibold uppercase tracking-wider transition-colors ${
-                              isUnlocked
-                                ? 'bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border-[#152B23]'
-                                : 'bg-[#EAF7EF]/60 hover:bg-[#152B23] text-[#152B23] hover:text-white border-[#C6D8CE] hover:border-[#152B23]'
-                            }`}
-                          >
-                            <span>{ctaLabel}</span>
-                            <ArrowRight className="w-3 h-3" aria-hidden="true" />
-                          </Link>
+                          <div className="space-y-2">
+                            <Link
+                              to={dest}
+                              className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 border font-mono text-[11px] font-semibold uppercase tracking-wider transition-colors ${
+                                isUnlocked
+                                  ? 'bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border-[#152B23]'
+                                  : 'bg-[#EAF7EF]/60 hover:bg-[#152B23] text-[#152B23] hover:text-white border-[#C6D8CE] hover:border-[#152B23]'
+                              }`}
+                            >
+                              <span>{ctaLabel}</span>
+                              <ArrowRight className="w-3 h-3" aria-hidden="true" />
+                            </Link>
+
+                            {(competingCounts[pool.id] ?? 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => openPoolComparison(pool)}
+                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-[#F6F1E5] hover:bg-[#152B23] text-[#152B23] hover:text-white border border-[#C6D8CE] hover:border-[#152B23] font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors cursor-pointer"
+                              >
+                                <Scale className="w-3 h-3" aria-hidden="true" />
+                                <span>
+                                  Compare ({competingCounts[pool.id]} similar)
+                                </span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </article>

@@ -38,6 +38,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const isExploreActive = pathname === '/';
   const isMyPoolsActive = pathname === '/my-pools';
+  const isAlertsActive = pathname === '/alerts';
+  const unreadAlertCount = session?.unreadAlertCount ?? 0;
 
   const handleLocationChange = (loc: string) => {
     const params = new URLSearchParams(pathname === '/' ? searchParams : undefined);
@@ -52,13 +54,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#EAF7EF] text-[#152B23]">
-      {/* Compact single-row TALLY masthead matching Stitch reference */}
+      {/* Compact TALLY masthead — single-row on sm+/desktop, crisp two-band on narrow mobile */}
       <header className="sticky top-0 z-30 bg-white border-b border-[#C6D8CE]">
-        <div className="max-w-[1200px] mx-auto px-2.5 sm:px-6 h-12 sm:h-14 flex items-center justify-between gap-1.5 sm:gap-4">
+        <div className="max-w-[1200px] mx-auto px-2.5 sm:px-6 flex flex-wrap sm:flex-nowrap items-center justify-between gap-x-2 sm:gap-4 sm:h-14">
           {/* Zone 1: Brand wordmark */}
           <Link
             to={lastExploreUrl}
-            className="font-display text-base sm:text-xl tracking-tight text-[#152B23] uppercase whitespace-nowrap shrink-0"
+            className="order-1 py-2.5 sm:py-0 font-display text-base sm:text-xl tracking-tight text-[#152B23] uppercase whitespace-nowrap shrink-0"
           >
             TALLY
           </Link>
@@ -66,28 +68,57 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {/* Zone 2: Primary navigation + location selector */}
           <nav
             aria-label="Primary navigation"
-            className="flex items-center gap-1 sm:gap-3 min-w-0"
+            className="order-3 sm:order-2 w-full sm:w-auto flex items-center justify-between sm:justify-start gap-1 sm:gap-2.5 min-w-0 border-t border-[#C6D8CE]/75 sm:border-t-0 py-1.5 sm:py-0 -mx-2.5 px-2.5 sm:mx-0 sm:px-0 bg-[#F6F1E5]/35 sm:bg-transparent"
           >
-            <Link
-              to={lastExploreUrl}
-              className={`px-2 sm:px-3.5 py-1 sm:py-1.5 font-mono text-[10px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
-                isExploreActive
-                  ? 'bg-[#152B23] text-white'
-                  : 'text-[#152B23] hover:bg-[#EAF7EF]'
-              }`}
-            >
-              Explore
-            </Link>
-            <Link
-              to="/my-pools"
-              className={`px-2 sm:px-3.5 py-1 sm:py-1.5 font-mono text-[10px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
-                isMyPoolsActive
-                  ? 'bg-[#FFBF32] text-[#152B23] border border-[#152B23]'
-                  : 'text-[#152B23] hover:bg-[#EAF7EF]'
-              }`}
-            >
-              My pools ({myPoolsCount})
-            </Link>
+            <div className="flex items-center gap-1 sm:gap-2 min-w-0 flex-1 sm:flex-initial">
+              <Link
+                to={lastExploreUrl}
+                aria-current={isExploreActive ? 'page' : undefined}
+                className={`px-2.5 sm:px-3 py-1.5 font-mono text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
+                  isExploreActive
+                    ? 'bg-[#152B23] text-white'
+                    : 'text-[#152B23] hover:bg-[#EAF7EF]'
+                }`}
+              >
+                Explore
+              </Link>
+              <Link
+                to="/my-pools"
+                aria-current={isMyPoolsActive ? 'page' : undefined}
+                className={`px-2.5 sm:px-3 py-1.5 font-mono text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
+                  isMyPoolsActive
+                    ? 'bg-[#FFBF32] text-[#152B23] border border-[#152B23]'
+                    : 'text-[#152B23] hover:bg-[#EAF7EF]'
+                }`}
+              >
+                My pools ({myPoolsCount})
+              </Link>
+              <Link
+                to="/alerts"
+                aria-current={isAlertsActive ? 'page' : undefined}
+                className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 font-mono text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
+                  isAlertsActive
+                    ? 'bg-[#FFBF32] text-[#152B23] border border-[#152B23]'
+                    : 'text-[#152B23] hover:bg-[#EAF7EF]'
+                }`}
+              >
+                <span>Alerts</span>
+                {unreadAlertCount > 0 ? (
+                  <span
+                    className={`inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 font-mono text-[10px] font-bold tabular-nums leading-none ${
+                      isAlertsActive
+                        ? 'bg-[#152B23] text-[#FFBF32]'
+                        : 'bg-[#A63A2B] text-white'
+                    }`}
+                  >
+                    {unreadAlertCount}
+                    <span className="sr-only"> unread</span>
+                  </span>
+                ) : (
+                  <span className="sr-only"> (0 unread)</span>
+                )}
+              </Link>
+            </div>
 
             <label className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-[#EAF7EF]/70 border border-[#C6D8CE] text-xs font-mono text-[#152B23] shrink-0">
               <MapPin className="w-3.5 h-3.5 text-[#516B61] shrink-0" aria-hidden="true" />
@@ -108,10 +139,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </nav>
 
           {/* Zone 3: Primary CTA + Discoverable non-overlapping Demo controls button */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div className="order-2 sm:order-3 py-2 sm:py-0 flex items-center gap-1.5 sm:gap-2 shrink-0">
             <Link
               to="/start"
-              className="px-2 sm:px-3.5 py-1.5 sm:py-2 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-[10px] sm:text-xs font-semibold uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors"
+              className="px-2.5 sm:px-3.5 py-1.5 sm:py-2 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-[10px] sm:text-xs font-semibold uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors"
             >
               Start a pool
             </Link>

@@ -1,4 +1,8 @@
 import {
+  dispatchAlertsForNewPool,
+  migrateSessionState,
+} from './alertsEngine.ts';
+import {
   buildMaverickPool,
   buildMaverickScenarioActivity,
   DEFAULT_DEMO_NOW,
@@ -24,7 +28,7 @@ import type {
 } from './types.ts';
 
 function cloneState(state: DemoSessionState): DemoSessionState {
-  return JSON.parse(JSON.stringify(state)) as DemoSessionState;
+  return migrateSessionState(JSON.parse(JSON.stringify(state)) as DemoSessionState);
 }
 
 function makeId(prefix: string): string {
@@ -557,7 +561,25 @@ export function createPool(
   state: DemoSessionState,
   actor: PersonaIdentity,
   input: CreatePoolInput
-): EngineOutcome<{ pool: Pool }> {
+): EngineOutcome<{ pool: Pool; deduplicated?: boolean }> {
+  const cleanRequestId =
+    typeof input.clientRequestId === 'string' && input.clientRequestId.trim().length > 0
+      ? input.clientRequestId.trim().slice(0, 64)
+      : undefined;
+
+  if (cleanRequestId) {
+    const existingByReq = state.pools.find(
+      (p) => p.clientRequestId === cleanRequestId && p.organizerId === actor.id
+    );
+    if (existingByReq) {
+      return {
+        ok: true,
+        data: { pool: existingByReq, deduplicated: true },
+        state: cloneState(state),
+      };
+    }
+  }
+
   const fieldErrors: Record<string, string> = {};
   if (!input.title || input.title.trim().length < 4) {
     fieldErrors.title = 'Enter a clear title (at least 4 characters).';
@@ -579,7 +601,9 @@ export function createPool(
   if (!normalizedGoalDate) {
     fieldErrors.goalDate = 'Select a valid calendar goal date (YYYY-MM-DD).';
   }
-  const cleanReqs = input.sharedRequirements.map((r) => r.trim()).filter(Boolean);
+  const cleanReqs = Array.isArray(input.sharedRequirements)
+    ? input.sharedRequirements.map((r) => String(r).trim()).filter(Boolean)
+    : [];
   if (cleanReqs.length === 0) {
     fieldErrors.sharedRequirements = 'List at least one shared requirement for compatible demand.';
   }
@@ -612,6 +636,7 @@ export function createPool(
   const newPool: Pool = {
     id,
     slug: id,
+    ...(cleanRequestId ? { clientRequestId: cleanRequestId } : {}),
     title: input.title.trim(),
     subtitle:
       input.subtitle?.trim() ||
@@ -631,7 +656,9 @@ export function createPool(
       input.organizerNote.trim() ||
       'Pooling compatible local buyers to request one clear, itemized seller quote.',
     sharedRequirements: cleanReqs,
-    categorySpecs: input.categorySpecs.filter((s) => s.label.trim() && s.value.trim()),
+    categorySpecs: Array.isArray(input.categorySpecs)
+      ? input.categorySpecs.filter((s) => s.label.trim() && s.value.trim())
+      : [],
     optionGroups: [
       {
         id: 'primary',
@@ -664,6 +691,9 @@ export function createPool(
 
   next.pools.unshift(newPool);
   next.updatedAt = next.demoNow;
+
+  // Match active item alerts prospectively on the same validated new-pool write path
+  dispatchAlertsForNewPool(next, newPool, actor.id);
 
   appendActivity(next, {
     poolId: newPool.id,

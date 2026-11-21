@@ -3,6 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
+import {
+  createItemAlert,
+  getViewerAlertsAndInbox,
+  markAllNotificationsRead,
+  markNotificationRead,
+  migrateSessionState,
+  updateItemAlert,
+} from './src/domain/alertsEngine.ts';
+import { findSimilarPoolsInSession } from './src/domain/competingPoolsEngine.ts';
 import { createSeedSession, PERSONAS } from './src/domain/seedData.ts';
 import {
   advanceClockPastDeadline,
@@ -27,10 +36,13 @@ import {
   toggleFollowPool,
   withdrawConfirmation,
 } from './src/domain/tallyEngine.ts';
-import type {
-  DemoScenarioId,
-  DemoSessionState,
-  PersonaRole,
+import {
+  POOL_CATEGORIES,
+  type DemoScenarioId,
+  type DemoSessionState,
+  type PersonaRole,
+  type PoolCategory,
+  type PoolSpecField,
 } from './src/domain/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -65,7 +77,7 @@ function loadStoreFromDisk(): void {
     const parsed = JSON.parse(raw) as Record<string, DemoSessionState>;
     for (const [key, val] of Object.entries(parsed)) {
       if (SESSION_ID_RE.test(key) && val && Array.isArray(val.pools)) {
-        sessions.set(key, val);
+        sessions.set(key, migrateSessionState(val));
       }
     }
   } catch (err) {
@@ -128,11 +140,13 @@ function parseRole(req: express.Request): PersonaRole {
 }
 
 function buildClientSessionResponse(state: DemoSessionState, role: PersonaRole) {
+  const safeState = migrateSessionState(state);
   const actor = PERSONAS[role];
+  const { alerts, notifications, unreadAlertCount } = getViewerAlertsAndInbox(safeState, actor.id);
   return {
-    sessionId: state.sessionId,
-    scenarioId: state.scenarioId,
-    demoNow: state.demoNow,
+    sessionId: safeState.sessionId,
+    scenarioId: safeState.scenarioId,
+    demoNow: safeState.demoNow,
     role,
     actor: {
       id: actor.id,
@@ -141,12 +155,15 @@ function buildClientSessionResponse(state: DemoSessionState, role: PersonaRole) 
       shortLabel: actor.shortLabel,
       location: actor.location,
     },
-    pools: state.pools.map((pool) => ({
-      ...sanitizePoolForRole(pool, role, actor.id, state.demoNow),
-      metrics: computePoolMetrics(pool, state.demoNow),
+    pools: safeState.pools.map((pool) => ({
+      ...sanitizePoolForRole(pool, role, actor.id, safeState.demoNow),
+      metrics: computePoolMetrics(pool, safeState.demoNow),
     })),
-    activity: state.activity,
-    updatedAt: state.updatedAt,
+    activity: safeState.activity,
+    alerts,
+    notifications,
+    unreadAlertCount,
+    updatedAt: safeState.updatedAt,
   };
 }
 
@@ -158,6 +175,7 @@ function statusFromErrorCode(code: string): number {
       return 403;
     case 'VALIDATION_ERROR':
       return 400;
+    case 'DUPLICATE_ALERT':
     case 'STALE_OFFER_VERSION':
     case 'OFFER_EXPIRED':
     case 'CAP_REACHED':
@@ -243,19 +261,204 @@ async function startServer() {
     })
   );
 
-  // Create a new pool
+  // Create a new pool (also runs prospective item-alert matching on the same validated write path)
   app.post(
     '/api/pools',
     withSession((req, res, state, role) => {
       const actor = PERSONAS[role];
-      const outcome = createPool(state, actor, req.body);
+      const headerReqId = req.header('idempotency-key');
+      const bodyPayload =
+        req.body && typeof req.body === 'object' ? { ...req.body } : {};
+      if (typeof headerReqId === 'string' && headerReqId.trim().length > 0 && !bodyPayload.clientRequestId) {
+        bodyPayload.clientRequestId = headerReqId.trim();
+      }
+      const outcome = createPool(state, actor, bodyPayload);
+      if (!outcome.ok) {
+        res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
+        return;
+      }
+      if (!outcome.data.deduplicated) {
+        saveSession(outcome.state);
+      }
+      res.status(outcome.data.deduplicated ? 200 : 201).json({
+        poolId: outcome.data.pool.id,
+        deduplicated: Boolean(outcome.data.deduplicated),
+        session: buildClientSessionResponse(outcome.state, role),
+      });
+    })
+  );
+
+  // Check for existing similar / competing pools within the current isolated session
+  app.post(
+    '/api/pools/similar',
+    withSession((req, res, state, role) => {
+      const actor = PERSONAS[role];
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const title = typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
+      if (title.length < 2) {
+        res.status(400).json({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Enter a product or pool title before checking for similar pools.',
+            fieldErrors: { title: 'Enter at least 2 characters to check for similar pools.' },
+          },
+        });
+        return;
+      }
+
+      const rawCat = typeof body.category === 'string' ? body.category.trim() : '';
+      let category: PoolCategory | undefined;
+      if (rawCat) {
+        if (!POOL_CATEGORIES.includes(rawCat as PoolCategory)) {
+          res.status(400).json({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'Unknown pool category.',
+              fieldErrors: { category: 'Select a valid Tally category.' },
+            },
+          });
+          return;
+        }
+        category = rawCat as PoolCategory;
+      }
+
+      const location =
+        typeof body.location === 'string' ? body.location.trim().slice(0, 100) : undefined;
+      const goalDate =
+        typeof body.goalDate === 'string' ? body.goalDate.trim().slice(0, 20) : undefined;
+      const modelOrVariant =
+        typeof body.modelOrVariant === 'string'
+          ? body.modelOrVariant.trim().slice(0, 120)
+          : undefined;
+      const excludePoolId =
+        typeof body.excludePoolId === 'string' ? body.excludePoolId.trim().slice(0, 80) : undefined;
+      const primaryOptionValues = Array.isArray(body.primaryOptionValues)
+        ? body.primaryOptionValues
+            .filter((v: unknown): v is string => typeof v === 'string')
+            .map((v: string) => v.trim().slice(0, 120))
+            .filter(Boolean)
+            .slice(0, 12)
+        : undefined;
+      const categorySpecs: PoolSpecField[] | undefined = Array.isArray(body.categorySpecs)
+        ? body.categorySpecs
+            .filter(
+              (s: unknown): s is PoolSpecField =>
+                Boolean(s) &&
+                typeof (s as PoolSpecField).label === 'string' &&
+                typeof (s as PoolSpecField).value === 'string'
+            )
+            .map((s: PoolSpecField) => ({
+              label: s.label.trim().slice(0, 60),
+              value: s.value.trim().slice(0, 120),
+            }))
+            .filter((s: PoolSpecField) => s.label && s.value)
+            .slice(0, 12)
+        : undefined;
+
+      const candidates = findSimilarPoolsInSession(state, role, actor.id, {
+        category,
+        title,
+        location,
+        goalDate,
+        modelOrVariant,
+        primaryOptionValues,
+        categorySpecs,
+        excludePoolId,
+        includeUnavailable: body.includeUnavailable !== false,
+      });
+
+      res.json({
+        candidates,
+        checkedPoolCount: state.pools.length,
+        checkedAt: state.demoNow,
+      });
+    })
+  );
+
+  // Saved item alerts & notifications (owner-scoped to current viewer persona)
+  app.get(
+    '/api/alerts',
+    withSession((_req, res, state, role) => {
+      const actor = PERSONAS[role];
+      res.json(getViewerAlertsAndInbox(state, actor.id));
+    })
+  );
+
+  app.post(
+    '/api/alerts',
+    withSession((req, res, state, role) => {
+      const actor = PERSONAS[role];
+      const outcome = createItemAlert(state, actor, {
+        query: typeof req.body?.query === 'string' ? req.body.query : '',
+        category: req.body?.category,
+        city: typeof req.body?.city === 'string' ? req.body.city : undefined,
+      });
       if (!outcome.ok) {
         res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
         return;
       }
       saveSession(outcome.state);
       res.status(201).json({
-        poolId: outcome.data.pool.id,
+        alert: outcome.data.alert,
+        session: buildClientSessionResponse(outcome.state, role),
+      });
+    })
+  );
+
+  app.patch(
+    '/api/alerts/:id',
+    withSession((req, res, state, role) => {
+      const actor = PERSONAS[role];
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const outcome = updateItemAlert(state, String(req.params.id), actor, {
+        ...(Object.prototype.hasOwnProperty.call(body, 'query') ? { query: body.query } : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'category') ? { category: body.category } : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'city') ? { city: body.city } : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'status') ? { status: body.status } : {}),
+      });
+      if (!outcome.ok) {
+        res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
+        return;
+      }
+      saveSession(outcome.state);
+      res.json({
+        alert: outcome.data.alert,
+        session: buildClientSessionResponse(outcome.state, role),
+      });
+    })
+  );
+
+  app.post(
+    '/api/notifications/:id/read',
+    withSession((req, res, state, role) => {
+      const actor = PERSONAS[role];
+      const outcome = markNotificationRead(state, String(req.params.id), actor);
+      if (!outcome.ok) {
+        res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
+        return;
+      }
+      saveSession(outcome.state);
+      res.json({
+        notification: outcome.data.notification,
+        session: buildClientSessionResponse(outcome.state, role),
+      });
+    })
+  );
+
+  app.post(
+    '/api/notifications/read-all',
+    withSession((_req, res, state, role) => {
+      const actor = PERSONAS[role];
+      const outcome = markAllNotificationsRead(state, actor);
+      if (!outcome.ok) {
+        res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
+        return;
+      }
+      if (outcome.data.markedCount > 0) {
+        saveSession(outcome.state);
+      }
+      res.json({
+        markedCount: outcome.data.markedCount,
         session: buildClientSessionResponse(outcome.state, role),
       });
     })

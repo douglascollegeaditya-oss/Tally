@@ -1,9 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Copy } from 'lucide-react';
-import { POOL_CATEGORIES, type PoolCategory, type PoolSpecField } from '../domain/types.ts';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, Check, Copy, Search } from 'lucide-react';
+import {
+  POOL_CATEGORIES,
+  type PoolCategory,
+  type PoolSpecField,
+  type SimilarPoolCandidate,
+  type SimilarPoolQueryInput,
+} from '../domain/types.ts';
 import { ApiRequestError, useTally } from '../lib/api.ts';
 import { formatCalendarDate } from '../lib/format.ts';
-import { Link } from '../lib/router.tsx';
+import { Link, useRouter } from '../lib/router.tsx';
+import {
+  CompetingPoolsComparison,
+  type ComparisonQuerySummary,
+} from '../components/CompetingPoolsComparison.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
 
 interface DraftState {
@@ -54,40 +64,63 @@ const INITIAL_DRAFT: DraftState = {
   goalDate: '2026-12-28',
   organizerNote: '',
   requirementsText: '',
-  vehModel: '2026 Toyota RAV4 Hybrid',
-  vehTrim: 'XLE AWD',
+  vehModel: '',
+  vehTrim: '',
   aptMoveIn: '2027-02-01',
-  aptUnitSize: '1 Bedroom',
-  furnSku: 'SKU-OAK-84',
-  furnDelivery: 'Portland metro local delivery',
-  collEdition: 'First Pressing 180g LP',
-  collCondition: 'Sealed Mint (M)',
-  hotelDest: 'Bend, OR',
+  aptUnitSize: '',
+  furnSku: '',
+  furnDelivery: '',
+  collEdition: '',
+  collCondition: '',
+  hotelDest: '',
   hotelCheckIn: '2027-01-22',
   hotelCheckOut: '2027-01-24',
-  hotelRoomType: 'King or Double Queen',
+  hotelRoomType: '',
   otherUnitSingular: 'home',
   otherUnitPlural: 'homes',
 };
 
 export function StartPoolPage() {
-  const { sessionId, busy, createPoolAction, showBanner } = useTally();
+  const { sessionId, busy, createPoolAction, findSimilarPoolsAction, showBanner } = useTally();
+  const { searchParams } = useRouter();
   const storageKey = `tally_start_draft_${sessionId}`;
 
   const [draft, setDraft] = useState<DraftState>(() => {
+    let base = { ...INITIAL_DRAFT };
     try {
       const saved = window.localStorage.getItem(storageKey);
-      if (saved) return { ...INITIAL_DRAFT, ...(JSON.parse(saved) as Partial<DraftState>) };
+      if (saved) base = { ...base, ...(JSON.parse(saved) as Partial<DraftState>) };
     } catch {
       // Ignore parse errors
     }
-    return INITIAL_DRAFT;
+    const qParam = searchParams.get('q')?.trim();
+    const catParam = searchParams.get('cat') as PoolCategory | null;
+    if (qParam && !base.title.trim()) {
+      base.title = qParam;
+    }
+    if (catParam && POOL_CATEGORIES.includes(catParam)) {
+      base.category = catParam;
+    }
+    return base;
   });
 
+  const [step, setStep] = useState<'form' | 'compare'>('form');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [publishedPoolId, setPublishedPoolId] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Step 2: competing pool check state
+  const [similarCandidates, setSimilarCandidates] = useState<SimilarPoolCandidate[]>([]);
+  const [checkingSimilar, setCheckingSimilar] = useState(false);
+  const [similarError, setSimilarError] = useState<string | null>(null);
+  const [checkedPoolCount, setCheckedPoolCount] = useState<number>(0);
+  const [joinedExistingPool, setJoinedExistingPool] = useState<{ id: string; title: string } | null>(
+    null
+  );
+
+  const submitAttemptIdRef = useRef<string>(`req-${Math.random().toString(36).slice(2, 10)}`);
+  const compareHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
   // Preserve draft automatically per session
   useEffect(() => {
@@ -97,6 +130,12 @@ export function StartPoolPage() {
       // Ignore storage quota errors
     }
   }, [draft, storageKey]);
+
+  useEffect(() => {
+    if (step === 'compare') {
+      compareHeadingRef.current?.focus();
+    }
+  }, [step]);
 
   const unitSingular =
     draft.category === 'Other'
@@ -108,6 +147,7 @@ export function StartPoolPage() {
       : DEFAULT_UNITS[draft.category].plural;
 
   const updateField = <K extends keyof DraftState>(key: K, value: DraftState[K]) => {
+    submitAttemptIdRef.current = `req-${Math.random().toString(36).slice(2, 10)}`;
     setDraft((prev) => ({ ...prev, [key]: value }));
     setFieldErrors((prev) => {
       if (!prev[key]) return prev;
@@ -121,85 +161,128 @@ export function StartPoolPage() {
     specs: PoolSpecField[];
     primaryLabel: string;
     primaryValues: string[];
+    modelOrVariant: string;
   } => {
+    const pushIfPresent = (arr: PoolSpecField[], label: string, val: string) => {
+      const trimmed = val.trim();
+      if (trimmed) arr.push({ label, value: trimmed });
+    };
+
     switch (draft.category) {
-      case 'Vehicles':
+      case 'Vehicles': {
+        const specs: PoolSpecField[] = [];
+        pushIfPresent(specs, 'Model', draft.vehModel);
+        pushIfPresent(specs, 'Trim', draft.vehTrim);
+        pushIfPresent(specs, 'Pickup', draft.deliveryOrDestination || draft.location);
+        const combined = `${draft.vehModel.trim()} ${draft.vehTrim.trim()}`.trim();
         return {
-          specs: [
-            { label: 'Model', value: draft.vehModel },
-            { label: 'Trim', value: draft.vehTrim },
-            { label: 'Pickup', value: draft.deliveryOrDestination },
-          ],
+          specs,
           primaryLabel: 'Model & trim',
-          primaryValues: [`${draft.vehModel} ${draft.vehTrim}`.trim()],
+          primaryValues: combined ? [combined] : [draft.title.trim() || 'Matches group specification'],
+          modelOrVariant: combined,
         };
-      case 'Apartments':
+      }
+      case 'Apartments': {
+        const specs: PoolSpecField[] = [];
+        if (draft.aptMoveIn) {
+          specs.push({
+            label: 'Move-in target',
+            value: formatCalendarDate(draft.aptMoveIn, { includeYear: true }),
+          });
+        }
+        pushIfPresent(specs, 'Unit size', draft.aptUnitSize);
+        pushIfPresent(specs, 'Area', draft.location);
         return {
-          specs: [
-            {
-              label: 'Move-in target',
-              value: draft.aptMoveIn
-                ? formatCalendarDate(draft.aptMoveIn, { includeYear: true })
-                : 'TBD',
-            },
-            { label: 'Unit size', value: draft.aptUnitSize },
-            { label: 'Area', value: draft.location },
-          ],
+          specs,
           primaryLabel: 'Unit size',
-          primaryValues: [draft.aptUnitSize],
+          primaryValues: draft.aptUnitSize.trim()
+            ? [draft.aptUnitSize.trim()]
+            : ['Matches group specification'],
+          modelOrVariant: draft.aptUnitSize.trim(),
         };
-      case 'Furniture':
+      }
+      case 'Furniture': {
+        const specs: PoolSpecField[] = [];
+        pushIfPresent(specs, 'SKU / Model', draft.furnSku);
+        pushIfPresent(specs, 'Delivery', draft.furnDelivery || draft.deliveryOrDestination);
+        specs.push({ label: 'Unit', value: `${unitSingular} / ${unitPlural}` });
         return {
-          specs: [
-            { label: 'SKU / Model', value: draft.furnSku },
-            { label: 'Delivery', value: draft.furnDelivery || draft.deliveryOrDestination },
-            { label: 'Unit', value: `${unitSingular} / ${unitPlural}` },
-          ],
+          specs,
           primaryLabel: 'Item SKU',
-          primaryValues: [draft.furnSku],
+          primaryValues: draft.furnSku.trim()
+            ? [draft.furnSku.trim()]
+            : ['Matches group specification'],
+          modelOrVariant: draft.furnSku.trim(),
         };
-      case 'Collectibles':
+      }
+      case 'Collectibles': {
+        const specs: PoolSpecField[] = [];
+        pushIfPresent(specs, 'Edition', draft.collEdition);
+        pushIfPresent(specs, 'Condition', draft.collCondition);
+        pushIfPresent(specs, 'Shipping', draft.deliveryOrDestination);
+        const combined = [draft.collEdition.trim(), draft.collCondition.trim()]
+          .filter(Boolean)
+          .join(' · ');
         return {
-          specs: [
-            { label: 'Edition', value: draft.collEdition },
-            { label: 'Condition', value: draft.collCondition },
-            { label: 'Shipping', value: draft.deliveryOrDestination },
-          ],
+          specs,
           primaryLabel: 'Edition & condition',
-          primaryValues: [`${draft.collEdition} (${draft.collCondition})`],
+          primaryValues: combined ? [combined] : ['Matches group specification'],
+          modelOrVariant: combined,
         };
-      case 'Hotels':
+      }
+      case 'Hotels': {
+        const specs: PoolSpecField[] = [];
+        pushIfPresent(specs, 'Destination', draft.hotelDest);
+        if (draft.hotelCheckIn && draft.hotelCheckOut) {
+          specs.push({
+            label: 'Check-in / Check-out',
+            value: `${formatCalendarDate(draft.hotelCheckIn)} – ${formatCalendarDate(
+              draft.hotelCheckOut,
+              { includeYear: true }
+            )}`,
+          });
+        }
+        pushIfPresent(specs, 'Room type', draft.hotelRoomType);
         return {
-          specs: [
-            { label: 'Destination', value: draft.hotelDest },
-            {
-              label: 'Check-in / Check-out',
-              value:
-                draft.hotelCheckIn && draft.hotelCheckOut
-                  ? `${formatCalendarDate(draft.hotelCheckIn)} – ${formatCalendarDate(draft.hotelCheckOut, { includeYear: true })}`
-                  : `${draft.hotelCheckIn} to ${draft.hotelCheckOut}`,
-            },
-            { label: 'Room type', value: draft.hotelRoomType },
-          ],
+          specs,
           primaryLabel: 'Room type',
-          primaryValues: [draft.hotelRoomType],
+          primaryValues: draft.hotelRoomType.trim()
+            ? [draft.hotelRoomType.trim()]
+            : ['Matches group specification'],
+          modelOrVariant: draft.hotelRoomType.trim(),
         };
+      }
       case 'Other':
-      default:
+      default: {
+        const specs: PoolSpecField[] = [
+          { label: 'Unit counted', value: `${unitSingular} / ${unitPlural}` },
+        ];
+        pushIfPresent(specs, 'Fulfillment', draft.deliveryOrDestination);
         return {
-          specs: [
-            { label: 'Unit counted', value: `${unitSingular} / ${unitPlural}` },
-            { label: 'Fulfillment', value: draft.deliveryOrDestination },
-          ],
+          specs,
           primaryLabel: 'Shared specification',
           primaryValues: ['Matches group specification'],
+          modelOrVariant: '',
         };
+      }
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitError(null);
+  const buildSimilarQuery = (): SimilarPoolQueryInput => {
+    const { specs, primaryValues, modelOrVariant } = buildCategorySpecs();
+    return {
+      category: draft.category,
+      title: draft.title.trim(),
+      location: draft.location.trim() || undefined,
+      goalDate: draft.goalDate || undefined,
+      modelOrVariant: modelOrVariant || undefined,
+      primaryOptionValues: primaryValues.filter((v) => v !== 'Matches group specification'),
+      categorySpecs: specs,
+      includeUnavailable: true,
+    };
+  };
+
+  const validateDraft = (): boolean => {
     const errs: Record<string, string> = {};
 
     if (draft.title.trim().length < 4) {
@@ -224,32 +307,85 @@ export function StartPoolPage() {
     if (reqs.length === 0) {
       errs.requirementsText = 'Add at least one shared requirement (one per line).';
     }
-    if (draft.category === 'Hotels' && draft.hotelCheckIn && draft.hotelCheckOut && draft.hotelCheckOut <= draft.hotelCheckIn) {
+    if (
+      draft.category === 'Hotels' &&
+      draft.hotelCheckIn &&
+      draft.hotelCheckOut &&
+      draft.hotelCheckOut <= draft.hotelCheckIn
+    ) {
       errs.hotelCheckOut = 'Check-out date must be after check-in date.';
     }
-    if (draft.category === 'Other' && (!draft.otherUnitSingular.trim() || !draft.otherUnitPlural.trim())) {
+    if (
+      draft.category === 'Other' &&
+      (!draft.otherUnitSingular.trim() || !draft.otherUnitPlural.trim())
+    ) {
       errs.otherUnitSingular = 'Enter both singular and plural unit labels.';
     }
 
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
-      setSubmitError('Fix the highlighted fields before publishing.');
+      setSubmitError('Fix the highlighted fields before checking for similar pools.');
+      return false;
+    }
+
+    setFieldErrors({});
+    setSubmitError(null);
+    return true;
+  };
+
+  const runSimilarCheck = async () => {
+    setCheckingSimilar(true);
+    setSimilarError(null);
+    try {
+      const result = await findSimilarPoolsAction(buildSimilarQuery());
+      setSimilarCandidates(result.candidates);
+      setCheckedPoolCount(result.checkedPoolCount);
+    } catch (err) {
+      setSimilarError(
+        err instanceof ApiRequestError
+          ? err.error.message
+          : 'Could not reach the server to check existing pools.'
+      );
+    } finally {
+      setCheckingSimilar(false);
+    }
+  };
+
+  // Step 1 submit: validate and check for existing same-item pools WITHOUT silently creating a pool
+  const handleCheckSimilarStep = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateDraft()) return;
+    setJoinedExistingPool(null);
+    setStep('compare');
+    await runSimilarCheck();
+  };
+
+  // Step 2 explicit publish: only called when the buyer chooses to create a separate pool
+  const handlePublishPool = async () => {
+    if (!validateDraft()) {
+      setStep('form');
       return;
     }
 
+    const reqs = draft.requirementsText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
     const { specs, primaryLabel, primaryValues } = buildCategorySpecs();
 
+    setSubmitError(null);
     try {
       const poolId = await createPoolAction({
+        clientRequestId: submitAttemptIdRef.current,
         title: draft.title.trim(),
         subtitle: draft.subtitle.trim() || undefined,
         category: draft.category,
         location: draft.location.trim(),
         deliveryOrDestination:
           draft.category === 'Hotels'
-            ? draft.hotelDest.trim()
+            ? draft.hotelDest.trim() || draft.location.trim()
             : draft.category === 'Furniture'
-              ? draft.furnDelivery.trim()
+              ? draft.furnDelivery.trim() || draft.deliveryOrDestination.trim() || draft.location.trim()
               : draft.deliveryOrDestination.trim() || draft.location.trim(),
         unitSingular,
         unitPlural,
@@ -268,7 +404,10 @@ export function StartPoolPage() {
     } catch (err) {
       if (err instanceof ApiRequestError) {
         setSubmitError(err.error.message);
-        if (err.error.fieldErrors) setFieldErrors(err.error.fieldErrors);
+        if (err.error.fieldErrors) {
+          setFieldErrors(err.error.fieldErrors);
+          setStep('form');
+        }
       } else {
         setSubmitError('Unable to publish pool.');
       }
@@ -351,14 +490,39 @@ export function StartPoolPage() {
           >
             Open My pools
           </Link>
+          <button
+            type="button"
+            onClick={() => {
+              submitAttemptIdRef.current = `req-${Math.random().toString(36).slice(2, 10)}`;
+              setDraft(INITIAL_DRAFT);
+              setFieldErrors({});
+              setSubmitError(null);
+              setStep('form');
+              setSimilarCandidates([]);
+              setJoinedExistingPool(null);
+              setPublishedPoolId(null);
+            }}
+            className="inline-flex items-center px-4 py-3 bg-white border border-[#C6D8CE] hover:border-[#152B23] font-mono text-xs uppercase text-[#152B23] cursor-pointer"
+          >
+            Start another pool
+          </button>
         </div>
       </div>
     );
   }
 
+  const { modelOrVariant } = buildCategorySpecs();
+  const querySummary: ComparisonQuerySummary = {
+    title: draft.title.trim(),
+    category: draft.category,
+    location: draft.location.trim() || undefined,
+    goalDate: draft.goalDate || undefined,
+    specsText: modelOrVariant ? `Spec / variant: ${modelOrVariant}` : undefined,
+  };
+
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-2 pb-3 border-b border-[#C6D8CE]">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#C6D8CE]">
         <Link
           to="/"
           className="inline-flex items-center gap-1.5 font-mono text-xs text-[#152B23] underline underline-offset-4"
@@ -366,22 +530,182 @@ export function StartPoolPage() {
           <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Back to Explore</span>
         </Link>
-        <span className="font-mono text-[11px] text-[#516B61]">Draft auto-saved locally</span>
+
+        {/* Clear 2-Step Indicator */}
+        <ol
+          aria-label="Pool creation steps"
+          className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider"
+        >
+          <li
+            className={`px-2 py-0.5 border ${
+              step === 'form'
+                ? 'bg-[#152B23] text-[#FFBF32] border-[#152B23] font-semibold'
+                : 'bg-[#EAF7EF] text-[#152B23] border-[#C6D8CE]'
+            }`}
+          >
+            1. Purchase details
+          </li>
+          <li aria-hidden="true" className="text-[#516B61]">
+            →
+          </li>
+          <li
+            className={`px-2 py-0.5 border ${
+              step === 'compare'
+                ? 'bg-[#152B23] text-[#FFBF32] border-[#152B23] font-semibold'
+                : 'bg-white text-[#516B61] border-[#C6D8CE]'
+            }`}
+          >
+            2. Check similar pools &amp; publish
+          </li>
+        </ol>
       </div>
 
       <div>
         <h1 className="font-display text-2xl sm:text-4xl text-[#152B23] uppercase">
-          Start a buying pool
+          {step === 'compare' ? 'Compare existing pools before publishing' : 'Start a buying pool'}
         </h1>
         <p className="mt-1 text-sm text-[#516B61]">
-          Define shared requirements tightly so one seller can quote a single clean group price.
+          {step === 'compare'
+            ? 'Join an existing group for faster momentum or a published seller quote, or continue creating your own pool if location, timing, or specs differ.'
+            : 'Describe your purchase first. We will check for existing pools buying the same item before creating a new one.'}
         </p>
       </div>
 
+      {step === 'compare' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-8 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2
+                ref={compareHeadingRef}
+                tabIndex={-1}
+                className="font-mono text-xs font-semibold uppercase tracking-wider text-[#152B23] focus:outline-none"
+              >
+                Existing pools checked ({checkedPoolCount} in this session)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setStep('form')}
+                className="inline-flex items-center gap-1.5 font-mono text-xs uppercase text-[#152B23] underline underline-offset-4 hover:text-[#28463B] cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Edit purchase details</span>
+              </button>
+            </div>
+
+            {joinedExistingPool && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="p-4 bg-[#EAF7EF] border-2 border-[#152B23] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+              >
+                <div className="space-y-0.5">
+                  <p className="font-mono text-xs font-semibold uppercase text-[#152B23]">
+                    Joined existing pool
+                  </p>
+                  <p className="text-sm text-[#152B23]">
+                    You added your interest to <strong>{joinedExistingPool.title}</strong> instead
+                    of starting a duplicate pool.
+                  </p>
+                </div>
+                <Link
+                  to={`/pools/${joinedExistingPool.id}`}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#152B23] text-white font-mono text-xs font-semibold uppercase tracking-wider whitespace-nowrap"
+                >
+                  <span>Open pool</span>
+                  <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                </Link>
+              </div>
+            )}
+
+            <CompetingPoolsComparison
+              candidates={similarCandidates}
+              loading={checkingSimilar}
+              error={similarError}
+              onRetry={() => void runSimilarCheck()}
+              onRefreshCandidates={() => void runSimilarCheck()}
+              querySummary={querySummary}
+              emptyTitle="No matching buying pools open right now"
+              emptyDescription="No existing pools in this session match this item, category, and specification. You can publish your new buying pool below."
+              onJoinSuccess={(id, title) => setJoinedExistingPool({ id, title })}
+            />
+          </div>
+
+          {/* Right Column: Explicit Non-Blocking Decision Card */}
+          <aside
+            aria-label="Publish decision"
+            className="lg:col-span-4 lg:sticky lg:top-20 space-y-4"
+          >
+            <div className="bg-white border-2 border-[#152B23] shadow-[4px_4px_0px_#152B23] p-5 space-y-4">
+              <div className="space-y-1">
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#516B61]">
+                  Your draft pool
+                </p>
+                <h3 className="font-display text-xl text-[#152B23] uppercase">
+                  {draft.title.trim()}
+                </h3>
+                <p className="text-xs text-[#516B61]">
+                  {draft.category} · {draft.location} · Target {formatCalendarDate(draft.goalDate)}
+                </p>
+                {modelOrVariant && (
+                  <p className="font-mono text-[11px] text-[#152B23]">Spec: {modelOrVariant}</p>
+                )}
+              </div>
+
+              <div className="p-3 bg-[#F6F1E5] border border-[#C6D8CE] text-xs space-y-1 text-[#152B23]">
+                <p className="font-mono text-[10px] uppercase text-[#516B61]">Threshold &amp; cap</p>
+                <p className="font-semibold">
+                  {draft.minQuantity} {unitPlural} minimum · {draft.maxQuantity} max cap
+                </p>
+              </div>
+
+              {submitError && (
+                <p
+                  role="alert"
+                  className="p-3 bg-[#FDF0EE] border border-[#A63A2B] text-xs text-[#A63A2B]"
+                >
+                  {submitError}
+                </p>
+              )}
+
+              <div className="space-y-2.5 pt-1">
+                {similarCandidates.length > 0 && !checkingSimilar && (
+                  <p className="text-xs text-[#516B61] leading-relaxed">
+                    Existing pools do not fit your specs, city, or timing? Tally never forces a
+                    match—you can still publish a separate pool below.
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  disabled={busy || checkingSimilar}
+                  onClick={() => void handlePublishPool()}
+                  className="w-full py-3.5 px-4 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider cursor-pointer disabled:opacity-60"
+                >
+                  {busy
+                    ? 'Publishing pool…'
+                    : similarError
+                      ? 'Publish separate pool anyway'
+                      : similarCandidates.length > 0
+                        ? 'Create separate pool anyway'
+                        : 'Publish new buying pool'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStep('form')}
+                  className="w-full py-2.5 px-4 bg-white hover:bg-[#F6F1E5] text-[#152B23] border border-[#C6D8CE] hover:border-[#152B23] font-mono text-xs uppercase tracking-wider cursor-pointer"
+                >
+                  Back to edit details
+                </button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Form Left 7 cols */}
         <form
-          onSubmit={handleSubmit}
+          onSubmit={handleCheckSimilarStep}
           noValidate
           className="lg:col-span-7 bg-white border border-[#C6D8CE] p-5 sm:p-6 space-y-5"
         >
@@ -488,23 +812,25 @@ export function StartPoolPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="veh-model" className="block font-mono text-[11px] uppercase text-[#516B61]">
-                    Model & year
+                    Model &amp; year
                   </label>
                   <input
                     id="veh-model"
                     value={draft.vehModel}
                     onChange={(e) => updateField('vehModel', e.target.value)}
+                    placeholder="e.g., 2026 Ford Maverick Hybrid"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
                 <div>
                   <label htmlFor="veh-trim" className="block font-mono text-[11px] uppercase text-[#516B61]">
-                    Trim & drivetrain
+                    Trim &amp; drivetrain
                   </label>
                   <input
                     id="veh-trim"
                     value={draft.vehTrim}
                     onChange={(e) => updateField('vehTrim', e.target.value)}
+                    placeholder="e.g., XLT FWD or Lariat AWD"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
@@ -535,6 +861,7 @@ export function StartPoolPage() {
                     onChange={(e) => updateField('aptUnitSize', e.target.value)}
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   >
+                    <option value="">Any / specify in title</option>
                     <option value="Studio">Studio</option>
                     <option value="1 Bedroom">1 Bedroom</option>
                     <option value="2 Bedroom">2 Bedroom</option>
@@ -553,6 +880,7 @@ export function StartPoolPage() {
                     id="furn-sku"
                     value={draft.furnSku}
                     onChange={(e) => updateField('furnSku', e.target.value)}
+                    placeholder="e.g., WW-DT90 or SKU-OAK-84"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] font-mono text-sm"
                   />
                 </div>
@@ -564,6 +892,7 @@ export function StartPoolPage() {
                     id="furn-deliv"
                     value={draft.furnDelivery}
                     onChange={(e) => updateField('furnDelivery', e.target.value)}
+                    placeholder="e.g., Portland metro local delivery"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
@@ -580,6 +909,7 @@ export function StartPoolPage() {
                     id="coll-ed"
                     value={draft.collEdition}
                     onChange={(e) => updateField('collEdition', e.target.value)}
+                    placeholder="e.g., First Pressing 180g LP"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
@@ -591,6 +921,7 @@ export function StartPoolPage() {
                     id="coll-cond"
                     value={draft.collCondition}
                     onChange={(e) => updateField('collCondition', e.target.value)}
+                    placeholder="e.g., Sealed Mint (M)"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
@@ -607,6 +938,7 @@ export function StartPoolPage() {
                     id="hotel-dest"
                     value={draft.hotelDest}
                     onChange={(e) => updateField('hotelDest', e.target.value)}
+                    placeholder="e.g., Hood River, OR"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
@@ -618,6 +950,7 @@ export function StartPoolPage() {
                     id="hotel-room"
                     value={draft.hotelRoomType}
                     onChange={(e) => updateField('hotelRoomType', e.target.value)}
+                    placeholder="e.g., King or Double Queen"
                     className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
                   />
                 </div>
@@ -798,18 +1131,27 @@ export function StartPoolPage() {
 
           <button
             type="submit"
-            disabled={busy}
-            className="w-full py-3.5 px-4 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider cursor-pointer disabled:opacity-60"
+            disabled={busy || checkingSimilar}
+            className="w-full inline-flex items-center justify-center gap-2 py-3.5 px-4 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-xs font-semibold uppercase tracking-wider cursor-pointer disabled:opacity-60"
           >
-            {busy ? 'Publishing pool…' : 'Publish pool to directory'}
+            <Search className="w-4 h-4" aria-hidden="true" />
+            <span>
+              {checkingSimilar ? 'Checking existing pools…' : 'Check for similar pools'}
+            </span>
           </button>
+          <p className="text-xs text-center text-[#516B61]">
+            Step 1 of 2 · Nothing is published yet. We will compare matching pools first.
+          </p>
         </form>
 
         {/* Live Directory Card Preview Right 5 cols */}
         <aside aria-label="Live pool card preview" className="lg:col-span-5 lg:sticky lg:top-20 space-y-3">
-          <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#516B61]">
-            Live Explore card preview
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#516B61]">
+              Live Explore card preview
+            </p>
+            <span className="font-mono text-[10px] text-[#516B61]">Draft auto-saved</span>
+          </div>
           <div className="bg-white border-2 border-[#152B23] shadow-[3px_3px_0px_#152B23] p-5 space-y-4">
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#516B61]">
@@ -848,6 +1190,7 @@ export function StartPoolPage() {
           </div>
         </aside>
       </div>
+      )}
     </div>
   );
 }

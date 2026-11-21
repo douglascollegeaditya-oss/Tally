@@ -290,8 +290,8 @@ export function DemoControls({ open, onClose }: DemoControlsProps) {
             </button>
           </div>
           <p className="text-[11px] text-[#516B61] leading-snug">
-            Reset demo discards custom pools, memberships, and activity in this isolated session
-            only.
+            Reset demo discards custom pools, saved alerts, notifications, memberships, and
+            activity in this isolated session only.
           </p>
         </div>
       </div>

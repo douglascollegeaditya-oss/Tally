@@ -1,6 +1,7 @@
 import { Layout } from './components/Layout.tsx';
 import { TallyProvider } from './lib/api.ts';
 import { RouterProvider, useRouter } from './lib/router.tsx';
+import { AlertsPage } from './pages/AlertsPage.tsx';
 import { ClaimPage } from './pages/ClaimPage.tsx';
 import { ExplorePage } from './pages/ExplorePage.tsx';
 import { MyPoolsPage } from './pages/MyPoolsPage.tsx';
@@ -23,6 +24,9 @@ function RouteSwitch() {
   }
   if (normalized === '/my-pools') {
     return <MyPoolsPage />;
+  }
+  if (normalized === '/alerts') {
+    return <AlertsPage />;
   }
 
   const sellerMatch = normalized.match(/^\/s\/([^/]+)$/);

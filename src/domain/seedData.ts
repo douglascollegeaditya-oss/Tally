@@ -1048,6 +1048,8 @@ export function createSeedSession(
     demoNow,
     pools: [maverickPool, ...otherPools],
     activity: initialActivity,
+    alerts: [],
+    notifications: [],
     createdAt: demoNow,
     updatedAt: demoNow,
   };
