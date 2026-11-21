@@ -1,0 +1,6 @@
+{
+  "name": "Tally",
+  "description": "Find people buying the same thing. Get one group price. A buyer-led group purchasing marketplace.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

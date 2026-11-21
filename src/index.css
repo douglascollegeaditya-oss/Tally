@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Archivo Black", "Archivo", system-ui, sans-serif;
+  --font-heading: "Archivo", system-ui, sans-serif;
+  --font-sans: "Instrument Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-sage-canvas: #EAF7EF;
+  --color-sage-tint: #DFF2E6;
+  --color-paper: #F6F1E5;
+  --color-paper-deep: #EAE2CE;
+  --color-spruce: #152B23;
+  --color-spruce-mid: #28463B;
+  --color-spruce-muted: #516B61;
+  --color-marigold: #FFBF32;
+  --color-marigold-hover: #F2B01E;
+  --color-rule: #C6D8CE;
+  --color-rust: #A63A2B;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--color-sage-canvas);
+    color: var(--color-spruce);
+    overflow-x: clip;
+  }
+
+  body {
+    background-color: var(--color-sage-canvas);
+    color: var(--color-spruce);
+    overflow-x: clip;
+  }
+
+  h1, .font-display {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  h2, h3, h4, .font-heading {
+    font-family: var(--font-heading);
+    text-wrap: balance;
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  *:focus-visible {
+    outline: 2px solid #152B23;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
