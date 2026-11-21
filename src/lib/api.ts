@@ -15,6 +15,7 @@ import type {
   SellerOffer,
   SimilarPoolCandidate,
   SimilarPoolQueryInput,
+  SimilarPoolReference,
   UpdateItemAlertInput,
 } from '../domain/types.ts';
 
@@ -24,6 +25,7 @@ export interface ClientPool extends Pool {
 
 export interface SimilarPoolsResponse {
   candidates: SimilarPoolCandidate[];
+  referencePools: SimilarPoolReference[];
   checkedPoolCount: number;
   checkedAt: string;
 }

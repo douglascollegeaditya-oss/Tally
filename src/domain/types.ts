@@ -392,6 +392,8 @@ export interface SimilarPoolCandidate {
   matchedTerms: string[];
   matchReasons: string[];
   differences: string[];
+  unspecifiedChecks: string[];
+  specFit: 'verified' | 'unverified';
   locationFit: 'match' | 'nationwide' | 'different' | 'unspecified';
   timingFit: 'close' | 'moderate' | 'far' | 'unspecified';
   timingDeltaDays: number | null;
@@ -401,4 +403,13 @@ export interface SimilarPoolCandidate {
   alreadyOrganizer: boolean;
   quoteSummary: SimilarPoolQuoteSummary;
 }
+
+export interface SimilarPoolReference {
+  pool: Pool & { metrics: PoolMetrics };
+  referenceKind: 'incompatible_variant';
+  reasonLabel: string;
+  explanation: string;
+  quoteSummary: SimilarPoolQuoteSummary;
+}
+
 

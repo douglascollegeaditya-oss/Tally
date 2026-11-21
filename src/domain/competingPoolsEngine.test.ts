@@ -4,6 +4,7 @@ import { createItemAlert } from './alertsEngine.ts';
 import {
   buildQueryFromPool,
   findCompetingPoolCounts,
+  findReferenceOnlyPoolsInSession,
   findSimilarPoolsInSession,
 } from './competingPoolsEngine.ts';
 import { createSeedSession, PERSONAS } from './seedData.ts';
@@ -416,3 +417,152 @@ test('matching respects session isolation and strips private fields per viewer r
     assert.equal(m.privatePhone, undefined);
   }
 });
+
+test('reference-only pools surface incompatible same-category variants without weakening matching gates', () => {
+  const state = createSeedSession('test-ref-only', 'just-unlocked');
+
+  // 1. Incompatible vehicle trim/powertrain: compatible candidates must be 0, referencePools surfaces Maverick XLT
+  const vehicleQuery = {
+    category: 'Vehicles' as const,
+    title: '2026 Ford Maverick Lariat EcoBoost',
+    location: 'Portland metro',
+  };
+  assert.equal(
+    findSimilarPoolsInSession(state, 'buyer', 'buyer-stranger', vehicleQuery).length,
+    0
+  );
+  const vehRefs = findReferenceOnlyPoolsInSession(state, 'buyer', 'buyer-stranger', vehicleQuery);
+  assert.equal(vehRefs.length, 1);
+  assert.equal(vehRefs[0].pool.id, 'pool-maverick-xlt');
+  assert.equal(vehRefs[0].referenceKind, 'incompatible_variant');
+  assert.match(vehRefs[0].reasonLabel, /Reference only/i);
+  assert.ok(vehRefs[0].explanation.length > 10);
+  // Private fields must still be stripped on referencePools
+  assert.equal(vehRefs[0].pool.sellerToken, undefined);
+  assert.equal(vehRefs[0].pool.currentOffer?.privateClaimInstructions, '');
+  for (const m of vehRefs[0].pool.members) {
+    assert.equal(m.privateEmail, undefined);
+    assert.equal(m.privatePhone, undefined);
+  }
+
+  // 2. Incompatible apartment unit size (Studio / 2 Bedroom vs 1 Bedroom on East Burnside Lofts)
+  const aptQuery = {
+    category: 'Apartments' as const,
+    title: 'East Burnside Lofts',
+    modelOrVariant: 'Studio',
+  };
+  assert.equal(findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', aptQuery).length, 0);
+  const aptRefs = findReferenceOnlyPoolsInSession(state, 'buyer', 'buyer-maya', aptQuery);
+  assert.equal(aptRefs.length, 1);
+  assert.equal(aptRefs[0].pool.id, 'pool-burnside-apts');
+  assert.match(aptRefs[0].explanation, /Studio|Unit|bedroom/i);
+
+  // 3. Incompatible furniture SKU (SKU-OAK-84 vs WW-DT90)
+  const furnQuery = {
+    category: 'Furniture' as const,
+    title: 'Solid Walnut 8-Seat Dining Table',
+    modelOrVariant: 'SKU-OAK-84',
+    categorySpecs: [{ label: 'SKU / Model', value: 'SKU-OAK-84' }],
+  };
+  assert.equal(findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', furnQuery).length, 0);
+  const furnRefs = findReferenceOnlyPoolsInSession(state, 'buyer', 'buyer-maya', furnQuery);
+  assert.equal(furnRefs.length, 1);
+  assert.equal(furnRefs[0].pool.id, 'pool-walnut-dining');
+  assert.match(furnRefs[0].explanation, /SKU|WW-DT90|SKU-OAK-84/i);
+
+  // 4. Category boundary never crossed even for reference-only pools
+  const wrongCategoryRefs = findReferenceOnlyPoolsInSession(state, 'buyer', 'buyer-maya', {
+    category: 'Furniture',
+    title: '2026 Ford Maverick Lariat EcoBoost',
+  });
+  assert.equal(wrongCategoryRefs.length, 0);
+});
+
+test('broad model-only query with unspecified category, variant, area, and timing is never labeled strong_match', () => {
+  const state = createSeedSession('test-broad-maverick', 'gathering-7-of-8');
+
+  const matches = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', {
+    title: 'Ford Maverick',
+    includeUnavailable: true,
+  });
+
+  assert.equal(matches.length, 1);
+  const candidate = matches[0];
+  assert.equal(candidate.pool.id, 'pool-maverick-xlt');
+  assert.equal(candidate.matchLevel, 'possible_match');
+  assert.equal(candidate.matchLabel, 'Possible match · verify specs');
+  assert.equal(candidate.specFit, 'unverified');
+  assert.equal(candidate.locationFit, 'unspecified');
+  assert.equal(candidate.timingFit, 'unspecified');
+  // Must NOT claim verified alignment for criteria that were never provided
+  assert.equal(candidate.differences.length, 0);
+  assert.equal(candidate.matchReasons.length, 1);
+  assert.match(candidate.matchReasons[0], /Matched item terms: ford, maverick/i);
+  assert.ok(!candidate.matchReasons.some((r) => /category|area|timing|location/i.test(r)));
+  // Unspecified criteria must be surfaced explicitly so the buyer knows what to verify
+  assert.ok(candidate.unspecifiedChecks.some((u) => /Category not specified/i.test(u)));
+  assert.ok(candidate.unspecifiedChecks.some((u) => /Specs not specified.*trim.*powertrain.*drivetrain/i.test(u)));
+  assert.ok(candidate.unspecifiedChecks.some((u) => /Model year not specified/i.test(u)));
+  assert.ok(candidate.unspecifiedChecks.some((u) => /Location not specified/i.test(u)));
+  assert.ok(candidate.unspecifiedChecks.some((u) => /Purchase timing not specified/i.test(u)));
+});
+
+test('partial vehicle specs stay possible_match while full structured compatible specs preserve strong_match', () => {
+  const state = createSeedSession('test-spec-granularity', 'gathering-7-of-8');
+
+  // Partial spec: trim supplied (XLT) but powertrain & drivetrain omitted -> still possible_match
+  const partial = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', {
+    category: 'Vehicles',
+    title: 'Ford Maverick XLT',
+    location: 'Portland metro',
+  });
+  assert.equal(partial.length, 1);
+  assert.equal(partial[0].matchLevel, 'possible_match');
+  assert.equal(partial[0].specFit, 'unverified');
+  assert.equal(partial[0].locationFit, 'match');
+  assert.ok(partial[0].matchReasons.some((r) => /Same category \(Vehicles\)/i.test(r)));
+  assert.ok(partial[0].matchReasons.some((r) => /Same area \(Portland metro\)/i.test(r)));
+  assert.ok(partial[0].unspecifiedChecks.some((u) => /powertrain.*drivetrain/i.test(u)));
+  assert.ok(partial[0].unspecifiedChecks.some((u) => /Purchase timing not specified/i.test(u)));
+
+  // Full structured compatible specs + location + timing -> verified strong_match with 0 unspecifiedChecks
+  const full = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', {
+    category: 'Vehicles',
+    title: '2026 Ford Maverick XLT Hybrid AWD',
+    location: 'Portland metro',
+    goalDate: '2026-12-16',
+  });
+  assert.equal(full.length, 1);
+  assert.equal(full[0].matchLevel, 'strong_match');
+  assert.equal(full[0].matchLabel, 'Strong match');
+  assert.equal(full[0].specFit, 'verified');
+  assert.equal(full[0].differences.length, 0);
+  assert.equal(full[0].unspecifiedChecks.length, 0);
+
+  // Full structured compatible specs + location, but timing omitted -> strong_match with honest timing check
+  const fullNoTiming = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', {
+    category: 'Vehicles',
+    title: '2026 Ford Maverick XLT Hybrid AWD',
+    location: 'Portland metro',
+  });
+  assert.equal(fullNoTiming.length, 1);
+  assert.equal(fullNoTiming[0].matchLevel, 'strong_match');
+  assert.equal(fullNoTiming[0].specFit, 'verified');
+  assert.match(fullNoTiming[0].matchLabel, /check unspecified details/i);
+  assert.equal(fullNoTiming[0].differences.length, 0);
+  assert.ok(fullNoTiming[0].unspecifiedChecks.some((u) => /Purchase timing not specified/i.test(u)));
+});
+
+test('broad apartment query without unit size is labeled possible_match and flags unverified unit size', () => {
+  const state = createSeedSession('test-broad-apt', 'gathering-7-of-8');
+
+  const broadApt = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', {
+    title: 'East Burnside Lofts',
+  });
+  assert.equal(broadApt.length, 1);
+  assert.equal(broadApt[0].pool.id, 'pool-burnside-apts');
+  assert.equal(broadApt[0].matchLevel, 'possible_match');
+  assert.equal(broadApt[0].specFit, 'unverified');
+  assert.ok(broadApt[0].unspecifiedChecks.some((u) => /Unit size not specified/i.test(u)));
+});
+

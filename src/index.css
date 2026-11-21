@@ -6,16 +6,18 @@
   --font-sans: "Instrument Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
 
-  --color-sage-canvas: #EAF7EF;
-  --color-sage-tint: #DFF2E6;
+  --color-sage-canvas: #F5F3EC;
+  --color-sage-tint: #ECEEE7;
   --color-paper: #F6F1E5;
   --color-paper-deep: #EAE2CE;
   --color-spruce: #152B23;
+  --color-spruce-deep: #1E4334;
   --color-spruce-mid: #28463B;
-  --color-spruce-muted: #516B61;
+  --color-spruce-muted: #4E6359;
+  --color-sage-muted: #8C9A86;
   --color-marigold: #FFBF32;
   --color-marigold-hover: #F2B01E;
-  --color-rule: #C6D8CE;
+  --color-rule: #CDD6CC;
   --color-rust: #A63A2B;
 }
 
@@ -53,7 +55,7 @@
   }
 
   *:focus-visible {
-    outline: 2px solid #152B23;
+    outline: 2px solid #1E4334;
     outline-offset: 2px;
   }
 }

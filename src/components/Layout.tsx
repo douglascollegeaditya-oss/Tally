@@ -53,9 +53,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#EAF7EF] text-[#152B23]">
+    <div className="min-h-screen flex flex-col bg-[#F5F3EC] text-[#152B23]">
       {/* Compact TALLY masthead — single-row on sm+/desktop, crisp two-band on narrow mobile */}
-      <header className="sticky top-0 z-30 bg-white border-b border-[#C6D8CE]">
+      <header className="sticky top-0 z-30 bg-[#FBF9F4] border-b border-[#CDD6CC]">
         <div className="max-w-[1200px] mx-auto px-2.5 sm:px-6 flex flex-wrap sm:flex-nowrap items-center justify-between gap-x-2 sm:gap-4 sm:h-14">
           {/* Zone 1: Brand wordmark */}
           <Link
@@ -68,7 +68,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {/* Zone 2: Primary navigation + location selector */}
           <nav
             aria-label="Primary navigation"
-            className="order-3 sm:order-2 w-full sm:w-auto flex items-center justify-between sm:justify-start gap-1 sm:gap-2.5 min-w-0 border-t border-[#C6D8CE]/75 sm:border-t-0 py-1.5 sm:py-0 -mx-2.5 px-2.5 sm:mx-0 sm:px-0 bg-[#F6F1E5]/35 sm:bg-transparent"
+            className="order-3 sm:order-2 w-full sm:w-auto flex items-center justify-between sm:justify-start gap-1 sm:gap-2.5 min-w-0 border-t border-[#CDD6CC]/80 sm:border-t-0 py-1.5 sm:py-0 -mx-2.5 px-2.5 sm:mx-0 sm:px-0 bg-[#F2EDE1]/55 sm:bg-transparent"
           >
             <div className="flex items-center gap-1 sm:gap-2 min-w-0 flex-1 sm:flex-initial">
               <Link
@@ -76,8 +76,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 aria-current={isExploreActive ? 'page' : undefined}
                 className={`px-2.5 sm:px-3 py-1.5 font-mono text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
                   isExploreActive
-                    ? 'bg-[#152B23] text-white'
-                    : 'text-[#152B23] hover:bg-[#EAF7EF]'
+                    ? 'bg-[#1E4334] text-white'
+                    : 'text-[#152B23] hover:bg-[#ECEEE7]'
                 }`}
               >
                 Explore
@@ -88,7 +88,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 className={`px-2.5 sm:px-3 py-1.5 font-mono text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
                   isMyPoolsActive
                     ? 'bg-[#FFBF32] text-[#152B23] border border-[#152B23]'
-                    : 'text-[#152B23] hover:bg-[#EAF7EF]'
+                    : 'text-[#152B23] hover:bg-[#ECEEE7]'
                 }`}
               >
                 My pools ({myPoolsCount})
@@ -99,7 +99,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 font-mono text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap shrink-0 transition-colors ${
                   isAlertsActive
                     ? 'bg-[#FFBF32] text-[#152B23] border border-[#152B23]'
-                    : 'text-[#152B23] hover:bg-[#EAF7EF]'
+                    : 'text-[#152B23] hover:bg-[#ECEEE7]'
                 }`}
               >
                 <span>Alerts</span>
@@ -120,8 +120,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </Link>
             </div>
 
-            <label className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-[#EAF7EF]/70 border border-[#C6D8CE] text-xs font-mono text-[#152B23] shrink-0">
-              <MapPin className="w-3.5 h-3.5 text-[#516B61] shrink-0" aria-hidden="true" />
+            <label className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-[#F2EDE1]/80 border border-[#CDD6CC] text-xs font-mono text-[#152B23] shrink-0">
+              <MapPin className="w-3.5 h-3.5 text-[#4E6359] shrink-0" aria-hidden="true" />
               <span className="sr-only">Filter by location</span>
               <select
                 aria-label="Filter directory by location"
@@ -155,8 +155,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
               title={`Demo controls · ${activeRoleLabel}`}
               className={`inline-flex items-center justify-center gap-1.5 h-[30px] sm:h-[34px] px-2 sm:px-2.5 border font-mono text-[10px] sm:text-[11px] uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
                 demoOpen
-                  ? 'bg-[#28463B] text-white border-[#152B23]'
-                  : 'bg-[#152B23] text-white border-[#152B23] hover:bg-[#28463B]'
+                  ? 'bg-[#1E4334] text-white border-[#152B23]'
+                  : 'bg-[#152B23] text-white border-[#152B23] hover:bg-[#1E4334]'
               }`}
             >
               <SlidersHorizontal className="w-3.5 h-3.5 text-[#FFBF32] shrink-0" aria-hidden="true" />

@@ -11,7 +11,10 @@ import {
   migrateSessionState,
   updateItemAlert,
 } from './src/domain/alertsEngine.ts';
-import { findSimilarPoolsInSession } from './src/domain/competingPoolsEngine.ts';
+import {
+  findReferenceOnlyPoolsInSession,
+  findSimilarPoolsInSession,
+} from './src/domain/competingPoolsEngine.ts';
 import { createSeedSession, PERSONAS } from './src/domain/seedData.ts';
 import {
   advanceClockPastDeadline,
@@ -355,7 +358,7 @@ async function startServer() {
             .slice(0, 12)
         : undefined;
 
-      const candidates = findSimilarPoolsInSession(state, role, actor.id, {
+      const queryInput = {
         category,
         title,
         location,
@@ -365,10 +368,14 @@ async function startServer() {
         categorySpecs,
         excludePoolId,
         includeUnavailable: body.includeUnavailable !== false,
-      });
+      };
+
+      const candidates = findSimilarPoolsInSession(state, role, actor.id, queryInput);
+      const referencePools = findReferenceOnlyPoolsInSession(state, role, actor.id, queryInput);
 
       res.json({
         candidates,
+        referencePools,
         checkedPoolCount: state.pools.length,
         checkedAt: state.demoNow,
       });

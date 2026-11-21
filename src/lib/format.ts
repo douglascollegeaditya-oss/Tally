@@ -128,20 +128,20 @@ export function getStageLabel(stage: PoolStage): string {
 export function getStageToneClasses(stage: PoolStage): string {
   switch (stage) {
     case 'unlocked':
-      return 'bg-[#152B23] text-white border-[#152B23]';
+      return 'bg-[#1E4334] text-white border-[#1E4334]';
     case 'offer_open':
       return 'bg-[#FFBF32] text-[#152B23] border-[#152B23]';
     case 'ready_for_quote':
-      return 'bg-[#F6F1E5] text-[#152B23] border-[#152B23]';
+      return 'bg-[#F6F1E5] text-[#152B23] border-[#1E4334]';
     case 'quote_requested':
-      return 'bg-[#F6F1E5] text-[#152B23] border-[#C6D8CE]';
+      return 'bg-[#F6F1E5] text-[#152B23] border-[#8C9A86]';
     case 'expired':
-      return 'bg-[#FDF0EE] text-[#A63A2B] border-[#E8C2BC]';
+      return 'bg-[#FDF4F2] text-[#A63A2B] border-[#E6C4BE]';
     case 'closed':
-      return 'bg-[#ECEEEB] text-[#4A5E56] border-[#C6D8CE]';
+      return 'bg-[#ECEEE7] text-[#4E6359] border-[#CDD6CC]';
     case 'gathering':
     default:
-      return 'bg-[#EAF7EF] text-[#152B23] border-[#C6D8CE]';
+      return 'bg-[#EFF3ED] text-[#1E4334] border-[#8C9A86]';
   }
 }
 

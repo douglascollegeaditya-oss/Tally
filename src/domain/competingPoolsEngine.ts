@@ -17,6 +17,7 @@ import {
   type SimilarPoolMatchLevel,
   type SimilarPoolQueryInput,
   type SimilarPoolQuoteSummary,
+  type SimilarPoolReference,
 } from './types.ts';
 
 const VALID_CATEGORY_SET = new Set<string>(POOL_CATEGORIES);
@@ -289,45 +290,74 @@ function collectQueryStructuredItemText(input: SimilarPoolQueryInput): {
   return { titleText, variantTexts, fullItemText };
 }
 
-function hasFamilyConflict(
+function getFamilyConflictDetail(
   queryTokens: Set<string>,
   poolTokens: Set<string>,
   family: Set<string>
-): boolean {
+): { queryValues: string[]; poolValues: string[] } | null {
   const qInFamily = Array.from(queryTokens).filter((t) => family.has(t));
   const pInFamily = Array.from(poolTokens).filter((t) => family.has(t));
-  if (qInFamily.length === 0 || pInFamily.length === 0) return false;
-  // Conflict if buyer specifies at least one member of the family and NONE overlap with pool's allowed set
-  return !qInFamily.some((t) => pInFamily.includes(t));
+  if (qInFamily.length === 0 || pInFamily.length === 0) return null;
+  if (qInFamily.some((t) => pInFamily.includes(t))) return null;
+  return { queryValues: qInFamily, poolValues: pInFamily };
 }
 
-function isIncompatibleVariant(
+function getIncompatibilityReason(
   queryText: string,
   queryTokens: Set<string>,
   queryVariantTexts: string[],
   pool: Pool,
   poolStructured: ReturnType<typeof collectPoolStructuredItemText>,
   poolTokens: Set<string>
-): boolean {
+): string | null {
   // 1. Check explicitly excluded option values on the candidate pool
   for (const excl of poolStructured.excludedOptionTexts) {
     const exclTokens = extractSubstantiveItemTokens(excl).filter((t) => !poolTokens.has(t));
     if (exclTokens.length > 0 && exclTokens.some((t) => queryTokens.has(t))) {
-      return true;
+      return `Incompatible option — this pool explicitly excludes "${excl}".`;
     }
   }
 
   // 2. Category-specific structured compatibility gates
   if (pool.category === 'Vehicles') {
-    if (hasFamilyConflict(queryTokens, poolTokens, VEHICLE_TRIM_FAMILY)) return true;
-    if (hasFamilyConflict(queryTokens, poolTokens, VEHICLE_POWERTRAIN_FAMILY)) return true;
-    if (hasFamilyConflict(queryTokens, poolTokens, VEHICLE_DRIVETRAIN_FAMILY)) return true;
+    const trimConflict = getFamilyConflictDetail(queryTokens, poolTokens, VEHICLE_TRIM_FAMILY);
+    if (trimConflict) {
+      return `Different trim — this pool is for ${trimConflict.poolValues
+        .map((v) => v.toUpperCase())
+        .join('/')}, not ${trimConflict.queryValues.map((v) => v.toUpperCase()).join('/')}.`;
+    }
+    const powerConflict = getFamilyConflictDetail(
+      queryTokens,
+      poolTokens,
+      VEHICLE_POWERTRAIN_FAMILY
+    );
+    if (powerConflict) {
+      return `Different powertrain — this pool requires ${powerConflict.poolValues.join(
+        '/'
+      )}, not ${powerConflict.queryValues.join('/')}.`;
+    }
+    const driveConflict = getFamilyConflictDetail(
+      queryTokens,
+      poolTokens,
+      VEHICLE_DRIVETRAIN_FAMILY
+    );
+    if (driveConflict) {
+      return `Different drivetrain — this pool requires ${driveConflict.poolValues
+        .map((v) => v.toUpperCase())
+        .join('/')}, not ${driveConflict.queryValues.map((v) => v.toUpperCase()).join('/')}.`;
+    }
   }
 
   if (pool.category === 'Apartments') {
     const qSize = extractApartmentUnitSize(queryText);
     const pSize = extractApartmentUnitSize(poolStructured.fullItemText);
-    if (qSize && pSize && qSize !== pSize) return true;
+    if (qSize && pSize && qSize !== pSize) {
+      const formatSize = (s: string) =>
+        s === 'studio' ? 'Studio' : s.replace('br', ' Bedroom');
+      return `Different unit size — this pool covers ${formatSize(
+        pSize
+      )}, not ${formatSize(qSize)}.`;
+    }
   }
 
   // 3. Explicit hyphenated SKU mismatch when both sides provide a structured SKU code
@@ -339,10 +369,16 @@ function isIncompatibleVariant(
   ]);
   if (querySkus.size > 0 && poolSkus.size > 0) {
     const hasOverlap = Array.from(querySkus).some((code) => poolSkus.has(code));
-    if (!hasOverlap) return true;
+    if (!hasOverlap) {
+      return `Different item SKU — this pool specifies ${Array.from(poolSkus)
+        .map((s) => s.toUpperCase())
+        .join(', ')}, not ${Array.from(querySkus)
+        .map((s) => s.toUpperCase())
+        .join(', ')}.`;
+    }
   }
 
-  return false;
+  return null;
 }
 
 function evaluateLocationFit(
@@ -530,6 +566,136 @@ function availabilityOrder(avail: SimilarPoolAvailability): number {
   }
 }
 
+function evaluateSpecVerification(
+  queryStructured: { titleText: string; variantTexts: string[]; fullItemText: string },
+  queryTerms: string[],
+  queryTermSet: Set<string>,
+  queryYears: Set<string>,
+  rawPool: Pool,
+  poolStructured: {
+    titleText: string;
+    allowedOptionTexts: string[];
+    excludedOptionTexts: string[];
+    itemSpecTexts: string[];
+    fullItemText: string;
+  },
+  poolTermSet: Set<string>,
+  matchedTitleTerms: string[],
+  poolTitleTerms: string[]
+): {
+  specFit: 'verified' | 'unverified';
+  verifiedReasons: string[];
+  unverifiedNotes: string[];
+} {
+  const verifiedReasons: string[] = [];
+  const unverifiedNotes: string[] = [];
+  let specFit: 'verified' | 'unverified' = 'verified';
+
+  const poolTitleCoverage =
+    poolTitleTerms.length > 0 ? matchedTitleTerms.length / poolTitleTerms.length : 0;
+
+  const requiredNonDeliveryGroups = (rawPool.optionGroups ?? []).filter(
+    (g) => g.id !== 'delivery' && g.required && (g.allowedValues?.length ?? 0) > 0
+  );
+
+  // 1. Vehicle trim, powertrain, and drivetrain verification
+  if (rawPool.category === 'Vehicles') {
+    const families: { name: string; set: Set<string> }[] = [
+      { name: 'trim', set: VEHICLE_TRIM_FAMILY },
+      { name: 'powertrain', set: VEHICLE_POWERTRAIN_FAMILY },
+      { name: 'drivetrain', set: VEHICLE_DRIVETRAIN_FAMILY },
+    ];
+    const missingFamilies: string[] = [];
+    const matchedFamilies: string[] = [];
+    for (const fam of families) {
+      const poolVals = Array.from(poolTermSet).filter((t) => fam.set.has(t));
+      if (poolVals.length === 0) continue;
+      const queryVals = Array.from(queryTermSet).filter((t) => fam.set.has(t));
+      if (queryVals.length === 0) {
+        missingFamilies.push(fam.name);
+      } else {
+        matchedFamilies.push(fam.name);
+      }
+    }
+
+    if (missingFamilies.length > 0) {
+      specFit = 'unverified';
+      const trimGroup = requiredNonDeliveryGroups[0];
+      const expectedSpec = trimGroup
+        ? trimGroup.allowedValues.join(', ')
+        : rawPool.title;
+      unverifiedNotes.push(
+        `Specs not specified (${missingFamilies.join(', ')}) — verify ${expectedSpec}`
+      );
+    } else if (matchedFamilies.length > 0) {
+      verifiedReasons.push(`Verified vehicle specs (${matchedFamilies.join(', ')})`);
+    }
+  }
+
+  // 2. Apartment unit size verification
+  if (rawPool.category === 'Apartments') {
+    const poolSize = extractApartmentUnitSize(poolStructured.fullItemText);
+    const querySize = extractApartmentUnitSize(queryStructured.fullItemText);
+    if (poolSize && !querySize) {
+      specFit = 'unverified';
+      const sizeGroup = requiredNonDeliveryGroups.find((g) => /size|unit|bed/i.test(g.label));
+      const expectedSize = sizeGroup ? sizeGroup.allowedValues.join(', ') : poolSize.toUpperCase();
+      unverifiedNotes.push(`Unit size not specified — verify ${expectedSize}`);
+    } else if (poolSize && querySize && poolSize === querySize) {
+      verifiedReasons.push('Verified apartment unit size');
+    }
+  }
+
+  // 3. Explicit SKU verification when pool specifies a structured SKU
+  const poolSkus = extractSkuCodes([
+    ...poolStructured.allowedOptionTexts,
+    ...poolStructured.itemSpecTexts,
+    poolStructured.titleText,
+  ]);
+  const querySkus = extractSkuCodes([queryStructured.titleText, ...queryStructured.variantTexts]);
+  if (poolSkus.size > 0) {
+    if (querySkus.size > 0) {
+      verifiedReasons.push('Verified item SKU');
+    } else if (poolTitleCoverage < 0.75) {
+      specFit = 'unverified';
+      unverifiedNotes.push('Item SKU/variant not specified — verify exact model before joining');
+    }
+  }
+
+  // 4. General required option & broad-query specificity check (for non-Vehicles/Apartments or custom pools)
+  if (specFit === 'verified' && rawPool.category !== 'Vehicles' && rawPool.category !== 'Apartments') {
+    for (const group of requiredNonDeliveryGroups) {
+      const groupTokens = extractSubstantiveItemTokens(group.allowedValues.join(' '));
+      if (groupTokens.length === 0) continue;
+      const matchedAnyOption = groupTokens.some((t) => queryTermSet.has(t));
+      if (!matchedAnyOption && poolTitleCoverage < 0.75) {
+        specFit = 'unverified';
+        unverifiedNotes.push(
+          `${group.label} not specified — verify ${group.allowedValues.join(', ')}`
+        );
+      }
+    }
+  }
+
+  if (
+    specFit === 'verified' &&
+    queryTerms.length <= 2 &&
+    poolTitleTerms.length >= 4 &&
+    poolTitleCoverage < 0.6
+  ) {
+    specFit = 'unverified';
+    unverifiedNotes.push('Broad search — verify exact model, variant, and options before joining');
+  }
+
+  // 5. Model year omitted when the pool explicitly targets a specific year
+  const poolYears = extractModelYears(poolStructured.fullItemText);
+  if (poolYears.size > 0 && queryYears.size === 0) {
+    unverifiedNotes.push(`Model year not specified (pool targets ${Array.from(poolYears).join('/')})`);
+  }
+
+  return { specFit, verifiedReasons, unverifiedNotes };
+}
+
 /**
  * Finds and ranks credible competing/similar pools inside the current demo session,
  * sanitized strictly for the active viewer role and identity.
@@ -576,14 +742,14 @@ export function findSimilarPoolsInSession(
 
     // Gate 2: Incompatible model / variant / excluded option gate
     if (
-      isIncompatibleVariant(
+      getIncompatibilityReason(
         queryStructured.fullItemText,
         queryTermSet,
         queryStructured.variantTexts,
         rawPool,
         poolStructured,
         poolTermSet
-      )
+      ) !== null
     ) {
       continue;
     }
@@ -624,9 +790,36 @@ export function findSimilarPoolsInSession(
       }
     }
 
+    const specEval = evaluateSpecVerification(
+      queryStructured,
+      queryTerms,
+      queryTermSet,
+      queryYears,
+      rawPool,
+      poolStructured,
+      poolTermSet,
+      matchedTitleTerms,
+      poolTitleTerms
+    );
+
+    const unspecifiedChecks: string[] = [];
+    if (!category) {
+      unspecifiedChecks.push(`Category not specified (pool is in ${rawPool.category})`);
+    }
+    unspecifiedChecks.push(...specEval.unverifiedNotes);
+    if (locationEval.fit === 'unspecified') {
+      unspecifiedChecks.push(`Location not specified (pool is in ${rawPool.location})`);
+    }
+    if (timingEval.fit === 'unspecified') {
+      unspecifiedChecks.push(
+        `Purchase timing not specified (target ${formatCalendarShort(rawPool.goalDate)})`
+      );
+    }
+
     const isUncertainItemMatch =
       queryTerms.length === 1 ||
       queryCoverage < 0.75 ||
+      specEval.specFit === 'unverified' ||
       Boolean(modelYearDiff);
 
     const hasLocationOrTimingMismatch =
@@ -636,35 +829,42 @@ export function findSimilarPoolsInSession(
 
     let matchLevel: SimilarPoolMatchLevel;
     let matchLabel: string;
-    if (isUncertainItemMatch) {
+    if (isUnavailablePool) {
+      matchLevel = isUncertainItemMatch ? 'possible_match' : 'same_item_different_terms';
+      matchLabel = isUncertainItemMatch
+        ? 'Possible match · no longer open'
+        : 'Same item · no longer open';
+    } else if (isUncertainItemMatch) {
       matchLevel = 'possible_match';
       matchLabel = 'Possible match · verify specs';
-    } else if (hasLocationOrTimingMismatch || isUnavailablePool) {
+    } else if (hasLocationOrTimingMismatch) {
       matchLevel = 'same_item_different_terms';
-      matchLabel = isUnavailablePool
-        ? 'Same item · no longer open'
-        : 'Same item · check location or timing';
+      matchLabel = 'Same item · check location or timing';
     } else {
       matchLevel = 'strong_match';
-      matchLabel = 'Strong match';
+      matchLabel =
+        unspecifiedChecks.length > 0
+          ? 'Strong item match · check unspecified details'
+          : 'Strong match';
     }
 
+    // Verified match evidence ONLY — never list unspecified criteria as positive matches
     const matchReasons: string[] = [];
     if (category) {
       matchReasons.push(`Same category (${rawPool.category})`);
-    } else {
-      matchReasons.push(`Category: ${rawPool.category}`);
     }
     matchReasons.push(`Matched item terms: ${matchedTerms.join(', ')}`);
+    matchReasons.push(...specEval.verifiedReasons);
     if (locationEval.reason) matchReasons.push(locationEval.reason);
     if (timingEval.reason) matchReasons.push(timingEval.reason);
 
+    // Verified mismatches / pool availability constraints ONLY
     const differences: string[] = [];
     if (modelYearDiff) differences.push(modelYearDiff);
     if (locationEval.diff) differences.push(locationEval.diff);
     if (timingEval.diff) differences.push(timingEval.diff);
     if (queryTerms.length === 1) {
-      differences.push('Broad single-term search — check exact model and trim before joining');
+      differences.push('Single-term search — narrow to model and variant before joining');
     } else if (queryCoverage < 0.75) {
       const unmatched = queryTerms.filter((t) => !poolTermSet.has(t));
       if (unmatched.length > 0) {
@@ -686,6 +886,7 @@ export function findSimilarPoolsInSession(
     score += availabilityOrder(availability) * 100;
     score += matchLevelOrder(matchLevel) * 40;
     score += Math.round(queryCoverage * 25);
+    if (specEval.specFit === 'verified') score += 15;
     if (locationEval.fit === 'match') score += 30;
     else if (locationEval.fit === 'nationwide') score += 15;
     if (timingEval.fit === 'close') score += 20;
@@ -719,6 +920,8 @@ export function findSimilarPoolsInSession(
       matchedTerms,
       matchReasons,
       differences,
+      unspecifiedChecks,
+      specFit: specEval.specFit,
       locationFit: locationEval.fit,
       timingFit: timingEval.fit,
       timingDeltaDays: timingEval.deltaDays,
@@ -736,6 +939,69 @@ export function findSimilarPoolsInSession(
   });
 
   return candidates;
+}
+
+/**
+ * Surfaces same-category pools that share the core item terms but failed the strict
+ * variant/trim/option/SKU gate — strictly labeled as "Reference only" so buyers understand
+ * why an existing pool was NOT merged with their specs without weakening matching gates.
+ */
+export function findReferenceOnlyPoolsInSession(
+  state: DemoSessionState,
+  role: PersonaRole,
+  actorId: string,
+  input: SimilarPoolQueryInput
+): SimilarPoolReference[] {
+  const category =
+    input.category && VALID_CATEGORY_SET.has(input.category)
+      ? (input.category as PoolCategory)
+      : undefined;
+
+  const queryStructured = collectQueryStructuredItemText(input);
+  const queryTerms = extractSubstantiveItemTokens(queryStructured.fullItemText);
+  if (queryTerms.length === 0) return [];
+
+  const queryTermSet = new Set(queryTerms);
+  const references: SimilarPoolReference[] = [];
+
+  for (const rawPool of state.pools) {
+    if (input.excludePoolId && rawPool.id === input.excludePoolId) continue;
+    // Never cross category boundaries even for reference-only pools
+    if (category && rawPool.category !== category) continue;
+
+    const poolStructured = collectPoolStructuredItemText(rawPool);
+    const poolTerms = extractSubstantiveItemTokens(poolStructured.fullItemText);
+    const poolTermSet = new Set(poolTerms);
+    if (poolTerms.length === 0) continue;
+
+    const incompatibilityReason = getIncompatibilityReason(
+      queryStructured.fullItemText,
+      queryTermSet,
+      queryStructured.variantTexts,
+      rawPool,
+      poolStructured,
+      poolTermSet
+    );
+    if (!incompatibilityReason) continue;
+
+    // Require strong core-item overlap in the pool title (e.g., "Ford Maverick" or "Walnut Dining Table")
+    const poolTitleTerms = extractSubstantiveItemTokens(poolStructured.titleText);
+    const matchedTitleTerms = queryTerms.filter((t) => poolTitleTerms.includes(t));
+    if (matchedTitleTerms.length < 2) continue;
+
+    const metrics = computePoolMetrics(rawPool, state.demoNow);
+    const sanitizedPool = sanitizePoolForRole(rawPool, role, actorId, state.demoNow);
+
+    references.push({
+      pool: { ...sanitizedPool, metrics },
+      referenceKind: 'incompatible_variant',
+      reasonLabel: 'Reference only · Incompatible variant',
+      explanation: `${incompatibilityReason} Cannot be joined for your requested specs.`,
+      quoteSummary: buildQuoteSummary(sanitizedPool),
+    });
+  }
+
+  return references.sort((a, b) => a.pool.id.localeCompare(b.pool.id));
 }
 
 /**

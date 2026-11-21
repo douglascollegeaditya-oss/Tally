@@ -1,11 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Copy, Search } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowRight, Check, Copy, Search } from 'lucide-react';
+import {
+  buildDraftFromSearchPrefill,
+  INITIAL_START_POOL_DRAFT,
+  resolveInitialStartPoolDraft,
+  type ResolvedStartPoolDraft,
+  type StartPoolDraftState,
+} from '../domain/startPoolDraft.ts';
 import {
   POOL_CATEGORIES,
   type PoolCategory,
   type PoolSpecField,
   type SimilarPoolCandidate,
   type SimilarPoolQueryInput,
+  type SimilarPoolReference,
 } from '../domain/types.ts';
 import { ApiRequestError, useTally } from '../lib/api.ts';
 import { formatCalendarDate } from '../lib/format.ts';
@@ -16,34 +24,6 @@ import {
 } from '../components/CompetingPoolsComparison.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
 
-interface DraftState {
-  category: PoolCategory;
-  title: string;
-  subtitle: string;
-  location: string;
-  deliveryOrDestination: string;
-  minQuantity: number;
-  maxQuantity: number;
-  goalDate: string;
-  organizerNote: string;
-  requirementsText: string;
-  // Category-specific typed fields
-  vehModel: string;
-  vehTrim: string;
-  aptMoveIn: string;
-  aptUnitSize: string;
-  furnSku: string;
-  furnDelivery: string;
-  collEdition: string;
-  collCondition: string;
-  hotelDest: string;
-  hotelCheckIn: string;
-  hotelCheckOut: string;
-  hotelRoomType: string;
-  otherUnitSingular: string;
-  otherUnitPlural: string;
-}
-
 const DEFAULT_UNITS: Record<PoolCategory, { singular: string; plural: string }> = {
   Vehicles: { singular: 'vehicle', plural: 'vehicles' },
   Apartments: { singular: 'household', plural: 'households' },
@@ -53,56 +33,40 @@ const DEFAULT_UNITS: Record<PoolCategory, { singular: string; plural: string }> 
   Other: { singular: 'unit', plural: 'units' },
 };
 
-const INITIAL_DRAFT: DraftState = {
-  category: 'Furniture',
-  title: '',
-  subtitle: '',
-  location: 'Portland metro',
-  deliveryOrDestination: 'Portland metro local delivery',
-  minQuantity: 6,
-  maxQuantity: 10,
-  goalDate: '2026-12-28',
-  organizerNote: '',
-  requirementsText: '',
-  vehModel: '',
-  vehTrim: '',
-  aptMoveIn: '2027-02-01',
-  aptUnitSize: '',
-  furnSku: '',
-  furnDelivery: '',
-  collEdition: '',
-  collCondition: '',
-  hotelDest: '',
-  hotelCheckIn: '2027-01-22',
-  hotelCheckOut: '2027-01-24',
-  hotelRoomType: '',
-  otherUnitSingular: 'home',
-  otherUnitPlural: 'homes',
-};
+function readSavedDraft(storageKey: string): Partial<StartPoolDraftState> | null {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return null;
+    return JSON.parse(raw) as Partial<StartPoolDraftState>;
+  } catch {
+    return null;
+  }
+}
 
 export function StartPoolPage() {
   const { sessionId, busy, createPoolAction, findSimilarPoolsAction, showBanner } = useTally();
   const { searchParams } = useRouter();
   const storageKey = `tally_start_draft_${sessionId}`;
 
-  const [draft, setDraft] = useState<DraftState>(() => {
-    let base = { ...INITIAL_DRAFT };
-    try {
-      const saved = window.localStorage.getItem(storageKey);
-      if (saved) base = { ...base, ...(JSON.parse(saved) as Partial<DraftState>) };
-    } catch {
-      // Ignore parse errors
-    }
-    const qParam = searchParams.get('q')?.trim();
-    const catParam = searchParams.get('cat') as PoolCategory | null;
-    if (qParam && !base.title.trim()) {
-      base.title = qParam;
-    }
-    if (catParam && POOL_CATEGORIES.includes(catParam)) {
-      base.category = catParam;
-    }
-    return base;
-  });
+  const qParam = searchParams.get('q');
+  const catParam = searchParams.get('cat');
+  const locParam = searchParams.get('loc');
+
+  const [initialResolution] = useState<ResolvedStartPoolDraft>(() =>
+    resolveInitialStartPoolDraft(readSavedDraft(storageKey), {
+      q: qParam,
+      cat: catParam,
+      loc: locParam,
+    })
+  );
+
+  const [draft, setDraft] = useState<StartPoolDraftState>(initialResolution.draft);
+  const [prefilledWithoutCategory, setPrefilledWithoutCategory] = useState<boolean>(
+    initialResolution.prefilledWithoutCategory
+  );
+  const [pendingSearchPrefill, setPendingSearchPrefill] = useState<
+    ResolvedStartPoolDraft['pendingSearchPrefill']
+  >(initialResolution.pendingSearchPrefill);
 
   const [step, setStep] = useState<'form' | 'compare'>('form');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -112,6 +76,7 @@ export function StartPoolPage() {
 
   // Step 2: competing pool check state
   const [similarCandidates, setSimilarCandidates] = useState<SimilarPoolCandidate[]>([]);
+  const [similarReferencePools, setSimilarReferencePools] = useState<SimilarPoolReference[]>([]);
   const [checkingSimilar, setCheckingSimilar] = useState(false);
   const [similarError, setSimilarError] = useState<string | null>(null);
   const [checkedPoolCount, setCheckedPoolCount] = useState<number>(0);
@@ -121,9 +86,30 @@ export function StartPoolPage() {
 
   const submitAttemptIdRef = useRef<string>(`req-${Math.random().toString(36).slice(2, 10)}`);
   const compareHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const didInitRef = useRef(false);
 
-  // Preserve draft automatically per session
+  // Re-resolve when session or URL prefill params change after initial mount
   useEffect(() => {
+    if (!didInitRef.current) {
+      didInitRef.current = true;
+      return;
+    }
+    const resolved = resolveInitialStartPoolDraft(readSavedDraft(storageKey), {
+      q: qParam,
+      cat: catParam,
+      loc: locParam,
+    });
+    setDraft(resolved.draft);
+    setPrefilledWithoutCategory(resolved.prefilledWithoutCategory);
+    setPendingSearchPrefill(resolved.pendingSearchPrefill);
+    setFieldErrors({});
+    setSubmitError(null);
+    setStep('form');
+  }, [storageKey, qParam, catParam, locParam]);
+
+  // Persist draft only once the user has deliberately edited a field
+  useEffect(() => {
+    if (!draft.userEdited) return;
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(draft));
     } catch {
@@ -137,18 +123,26 @@ export function StartPoolPage() {
     }
   }, [step]);
 
-  const unitSingular =
-    draft.category === 'Other'
+  const unitSingular = !draft.category
+    ? 'unit'
+    : draft.category === 'Other'
       ? draft.otherUnitSingular.trim() || 'unit'
       : DEFAULT_UNITS[draft.category].singular;
-  const unitPlural =
-    draft.category === 'Other'
+  const unitPlural = !draft.category
+    ? 'units'
+    : draft.category === 'Other'
       ? draft.otherUnitPlural.trim() || 'units'
       : DEFAULT_UNITS[draft.category].plural;
 
-  const updateField = <K extends keyof DraftState>(key: K, value: DraftState[K]) => {
+  const updateField = <K extends keyof StartPoolDraftState>(
+    key: K,
+    value: StartPoolDraftState[K]
+  ) => {
     submitAttemptIdRef.current = `req-${Math.random().toString(36).slice(2, 10)}`;
-    setDraft((prev) => ({ ...prev, [key]: value }));
+    setDraft((prev) => ({ ...prev, [key]: value, userEdited: true }));
+    if (key === 'category' && value) {
+      setPrefilledWithoutCategory(false);
+    }
     setFieldErrors((prev) => {
       if (!prev[key]) return prev;
       const next = { ...prev };
@@ -271,7 +265,7 @@ export function StartPoolPage() {
   const buildSimilarQuery = (): SimilarPoolQueryInput => {
     const { specs, primaryValues, modelOrVariant } = buildCategorySpecs();
     return {
-      category: draft.category,
+      category: draft.category || undefined,
       title: draft.title.trim(),
       location: draft.location.trim() || undefined,
       goalDate: draft.goalDate || undefined,
@@ -285,6 +279,10 @@ export function StartPoolPage() {
   const validateDraft = (): boolean => {
     const errs: Record<string, string> = {};
 
+    if (!draft.category) {
+      errs.category =
+        'Select a category that matches your item before checking for similar pools.';
+    }
     if (draft.title.trim().length < 4) {
       errs.title = 'Enter a descriptive pool title (at least 4 characters).';
     }
@@ -339,6 +337,7 @@ export function StartPoolPage() {
     try {
       const result = await findSimilarPoolsAction(buildSimilarQuery());
       setSimilarCandidates(result.candidates);
+      setSimilarReferencePools(result.referencePools ?? []);
       setCheckedPoolCount(result.checkedPoolCount);
     } catch (err) {
       setSimilarError(
@@ -362,11 +361,12 @@ export function StartPoolPage() {
 
   // Step 2 explicit publish: only called when the buyer chooses to create a separate pool
   const handlePublishPool = async () => {
-    if (!validateDraft()) {
+    if (!validateDraft() || !draft.category) {
       setStep('form');
       return;
     }
 
+    const selectedCategory: PoolCategory = draft.category;
     const reqs = draft.requirementsText
       .split('\n')
       .map((l) => l.trim())
@@ -379,7 +379,7 @@ export function StartPoolPage() {
         clientRequestId: submitAttemptIdRef.current,
         title: draft.title.trim(),
         subtitle: draft.subtitle.trim() || undefined,
-        category: draft.category,
+        category: selectedCategory,
         location: draft.location.trim(),
         deliveryOrDestination:
           draft.category === 'Hotels'
@@ -494,11 +494,15 @@ export function StartPoolPage() {
             type="button"
             onClick={() => {
               submitAttemptIdRef.current = `req-${Math.random().toString(36).slice(2, 10)}`;
-              setDraft(INITIAL_DRAFT);
+              window.localStorage.removeItem(storageKey);
+              setDraft({ ...INITIAL_START_POOL_DRAFT });
+              setPrefilledWithoutCategory(false);
+              setPendingSearchPrefill(null);
               setFieldErrors({});
               setSubmitError(null);
               setStep('form');
               setSimilarCandidates([]);
+              setSimilarReferencePools([]);
               setJoinedExistingPool(null);
               setPublishedPoolId(null);
             }}
@@ -514,18 +518,22 @@ export function StartPoolPage() {
   const { modelOrVariant } = buildCategorySpecs();
   const querySummary: ComparisonQuerySummary = {
     title: draft.title.trim(),
-    category: draft.category,
+    category: draft.category || undefined,
     location: draft.location.trim() || undefined,
     goalDate: draft.goalDate || undefined,
     specsText: modelOrVariant ? `Spec / variant: ${modelOrVariant}` : undefined,
   };
+  const createAlertParams = new URLSearchParams({ create: '1' });
+  if (draft.title.trim()) createAlertParams.set('q', draft.title.trim());
+  if (draft.category) createAlertParams.set('cat', draft.category);
+  const createAlertHref = `/alerts?${createAlertParams.toString()}`;
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#C6D8CE]">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#CDD6CC]">
         <Link
           to="/"
-          className="inline-flex items-center gap-1.5 font-mono text-xs text-[#152B23] underline underline-offset-4"
+          className="inline-flex items-center gap-1.5 font-mono text-xs text-[#152B23] underline underline-offset-4 hover:text-[#1E4334]"
         >
           <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Back to Explore</span>
@@ -537,22 +545,24 @@ export function StartPoolPage() {
           className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider"
         >
           <li
-            className={`px-2 py-0.5 border ${
+            aria-current={step === 'form' ? 'step' : undefined}
+            className={`px-2.5 py-0.5 border ${
               step === 'form'
-                ? 'bg-[#152B23] text-[#FFBF32] border-[#152B23] font-semibold'
-                : 'bg-[#EAF7EF] text-[#152B23] border-[#C6D8CE]'
+                ? 'bg-[#1E4334] text-[#FFBF32] border-[#1E4334] font-semibold'
+                : 'bg-[#EFF3ED] text-[#1E4334] border-[#8C9A86]'
             }`}
           >
             1. Purchase details
           </li>
-          <li aria-hidden="true" className="text-[#516B61]">
+          <li aria-hidden="true" className="text-[#8C9A86]">
             →
           </li>
           <li
-            className={`px-2 py-0.5 border ${
+            aria-current={step === 'compare' ? 'step' : undefined}
+            className={`px-2.5 py-0.5 border ${
               step === 'compare'
-                ? 'bg-[#152B23] text-[#FFBF32] border-[#152B23] font-semibold'
-                : 'bg-white text-[#516B61] border-[#C6D8CE]'
+                ? 'bg-[#1E4334] text-[#FFBF32] border-[#1E4334] font-semibold'
+                : 'bg-white text-[#4E6359] border-[#CDD6CC]'
             }`}
           >
             2. Check similar pools &amp; publish
@@ -619,13 +629,16 @@ export function StartPoolPage() {
 
             <CompetingPoolsComparison
               candidates={similarCandidates}
+              referencePools={similarReferencePools}
               loading={checkingSimilar}
               error={similarError}
               onRetry={() => void runSimilarCheck()}
               onRefreshCandidates={() => void runSimilarCheck()}
               querySummary={querySummary}
-              emptyTitle="No matching buying pools open right now"
-              emptyDescription="No existing pools in this session match this item, category, and specification. You can publish your new buying pool below."
+              emptyTitle="No compatible open pool found"
+              emptyDescription="No existing pools in this session match this item, category, and specification. You can adjust your purchase details, save an item alert, or publish your separate buying pool."
+              createAlertHref={createAlertHref}
+              onAdjustSearch={() => setStep('form')}
               onJoinSuccess={(id, title) => setJoinedExistingPool({ id, title })}
             />
           </div>
@@ -709,11 +722,85 @@ export function StartPoolPage() {
           noValidate
           className="lg:col-span-7 bg-white border border-[#C6D8CE] p-5 sm:p-6 space-y-5"
         >
+          {pendingSearchPrefill && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="p-3.5 bg-[#F6F1E5] border border-[#1E4334] space-y-2.5"
+            >
+              <p className="text-xs text-[#152B23] leading-relaxed">
+                Your existing draft (
+                <strong>&ldquo;{draft.title.trim() || draft.category || 'Untitled draft'}&rdquo;</strong>
+                ) was preserved. You arrived from an Explore search for{' '}
+                <strong>&ldquo;{pendingSearchPrefill.title}&rdquo;</strong>
+                {pendingSearchPrefill.category
+                  ? ` (${pendingSearchPrefill.category})`
+                  : ' (no category selected)'}
+                .
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.localStorage.removeItem(storageKey);
+                    const nextDraft = buildDraftFromSearchPrefill({
+                      q: pendingSearchPrefill.title,
+                      cat: pendingSearchPrefill.category || null,
+                      loc: pendingSearchPrefill.location ?? null,
+                    });
+                    setDraft(nextDraft);
+                    setPrefilledWithoutCategory(
+                      Boolean(pendingSearchPrefill.title) && nextDraft.category === ''
+                    );
+                    setPendingSearchPrefill(null);
+                    setFieldErrors({});
+                    setSubmitError(null);
+                  }}
+                  className="px-3 py-1.5 bg-[#1E4334] hover:bg-[#152B23] text-white font-mono text-[11px] font-semibold uppercase tracking-wider cursor-pointer"
+                >
+                  Start draft for &ldquo;{pendingSearchPrefill.title}&rdquo;
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingSearchPrefill(null)}
+                  className="px-3 py-1.5 bg-white hover:bg-[#EFF3ED] text-[#152B23] border border-[#8C9A86] font-mono text-[11px] uppercase tracking-wider cursor-pointer"
+                >
+                  Keep saved draft
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Category Picker */}
-          <fieldset className="space-y-2">
-            <legend className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#152B23]">
-              1. Category
-            </legend>
+          <fieldset
+            className={`space-y-2.5 p-3.5 border transition-colors ${
+              fieldErrors.category
+                ? 'border-[#A63A2B] bg-[#FDF0EE]/50'
+                : !draft.category
+                  ? 'border-[#D49B00] bg-[#FFFDF5]'
+                  : 'border-transparent p-0'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <legend className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#152B23]">
+                1. Category *
+              </legend>
+              {!draft.category && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#FFF4D1] text-[#6B4A00] border border-[#D49B00] font-mono text-[10px] font-semibold uppercase tracking-wider">
+                  <AlertCircle className="w-3 h-3" aria-hidden="true" />
+                  <span>Required · Not selected</span>
+                </span>
+              )}
+            </div>
+
+            {!draft.category && (
+              <p className="text-xs text-[#6B4A00] leading-relaxed">
+                {prefilledWithoutCategory
+                  ? `Prefilled from your search for "${draft.title.trim()}" with no category supplied — select the matching category below before continuing.`
+                  : 'Select the category that matches your purchase to unlock item-specific specification fields.'}
+              </p>
+            )}
+
             <div className="flex flex-wrap gap-1.5">
               {POOL_CATEGORIES.map((cat) => {
                 const active = draft.category === cat;
@@ -725,8 +812,8 @@ export function StartPoolPage() {
                     aria-pressed={active}
                     className={`px-3 py-1.5 border font-mono text-[11px] uppercase tracking-wider cursor-pointer ${
                       active
-                        ? 'bg-[#152B23] text-white border-[#152B23]'
-                        : 'bg-[#EAF7EF]/60 text-[#152B23] border-[#C6D8CE] hover:border-[#152B23]'
+                        ? 'bg-[#1E4334] text-white border-[#1E4334]'
+                        : 'bg-white text-[#152B23] border-[#8C9A86] hover:border-[#1E4334] hover:bg-[#F7F5EE]'
                     }`}
                   >
                     {cat}
@@ -734,6 +821,11 @@ export function StartPoolPage() {
                 );
               })}
             </div>
+            {fieldErrors.category && (
+              <p role="alert" className="text-xs font-medium text-[#A63A2B]">
+                {fieldErrors.category}
+              </p>
+            )}
           </fieldset>
 
           {/* Basic Info */}
@@ -805,8 +897,15 @@ export function StartPoolPage() {
           {/* Category-Aware Typed Fields */}
           <div className="p-4 bg-[#F6F1E5]/70 border border-[#C6D8CE] space-y-3">
             <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#152B23]">
-              2. {draft.category} specifications
+              2. {draft.category ? `${draft.category} specifications` : 'Item specifications'}
             </p>
+
+            {!draft.category && (
+              <p className="text-xs text-[#4E6359] leading-relaxed">
+                Select a category above to show relevant specification fields (vehicle model &amp;
+                trim, apartment unit size, furniture SKU, collectible edition, or hotel dates).
+              </p>
+            )}
 
             {draft.category === 'Vehicles' && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1150,12 +1249,22 @@ export function StartPoolPage() {
             <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#516B61]">
               Live Explore card preview
             </p>
-            <span className="font-mono text-[10px] text-[#516B61]">Draft auto-saved</span>
+            <span className="font-mono text-[10px] text-[#516B61]">
+              {draft.userEdited
+                ? 'Draft auto-saved'
+                : prefilledWithoutCategory
+                  ? 'Prefilled · pick category'
+                  : 'Starts saving on edit'}
+            </span>
           </div>
           <div className="bg-white border-2 border-[#152B23] shadow-[3px_3px_0px_#152B23] p-5 space-y-4">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#516B61]">
-                {draft.category}
+              <span
+                className={`font-mono text-[10px] font-semibold uppercase tracking-wider ${
+                  draft.category ? 'text-[#516B61]' : 'text-[#8A5A00]'
+                }`}
+              >
+                {draft.category || 'Category not selected'}
               </span>
               <span className="px-2 py-0.5 bg-[#EAF7EF] border border-[#C6D8CE] font-mono text-[10px] font-semibold uppercase text-[#152B23]">
                 Gathering buyers
