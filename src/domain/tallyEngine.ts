@@ -329,7 +329,16 @@ export function joinOrUpdatePool(
   poolId: string,
   actor: PersonaIdentity,
   input: JoinPoolInput
-): EngineOutcome<{ pool: Pool; member: PoolMember; eligibility: EligibilityResult }> {
+): EngineOutcome<{
+  pool: Pool;
+  member: PoolMember;
+  eligibility: EligibilityResult;
+  isNewJoin: boolean;
+  targetReachedNow: boolean;
+  previousEligibleUnits: number;
+  currentEligibleUnits: number;
+  targetMin: number;
+}> {
   if (actor.role === 'seller') {
     return {
       ok: false,
@@ -346,11 +355,11 @@ export function joinOrUpdatePool(
     return { ok: false, error: { code: 'NOT_FOUND', message: 'Pool not found.' } };
   }
 
-  const metrics = computePoolMetrics(pool, next.demoNow);
+  const preMetrics = computePoolMetrics(pool, next.demoNow);
   if (
-    metrics.effectiveStage === 'unlocked' ||
-    metrics.effectiveStage === 'expired' ||
-    metrics.effectiveStage === 'closed'
+    preMetrics.effectiveStage === 'unlocked' ||
+    preMetrics.effectiveStage === 'expired' ||
+    preMetrics.effectiveStage === 'closed'
   ) {
     return {
       ok: false,
@@ -419,6 +428,12 @@ export function joinOrUpdatePool(
 
   const eligibility = evaluateMemberEligibility(pool, memberRecord);
   const updatedMetrics = computePoolMetrics(pool, next.demoNow);
+  const targetReachedNow =
+    !pool.currentOffer &&
+    preMetrics.effectiveStage === 'gathering' &&
+    updatedMetrics.effectiveStage === 'ready_for_quote' &&
+    preMetrics.eligibleInterestedUnits < preMetrics.targetMin &&
+    updatedMetrics.eligibleInterestedUnits >= updatedMetrics.targetMin;
   pool.stage = updatedMetrics.effectiveStage;
   pool.updatedAt = next.demoNow;
   next.updatedAt = next.demoNow;
@@ -439,7 +454,20 @@ export function joinOrUpdatePool(
         }`,
   });
 
-  return { ok: true, data: { pool, member: memberRecord, eligibility }, state: next };
+  return {
+    ok: true,
+    data: {
+      pool,
+      member: memberRecord,
+      eligibility,
+      isNewJoin: !isUpdate,
+      targetReachedNow,
+      previousEligibleUnits: preMetrics.eligibleInterestedUnits,
+      currentEligibleUnits: updatedMetrics.eligibleInterestedUnits,
+      targetMin: updatedMetrics.targetMin,
+    },
+    state: next,
+  };
 }
 
 export function leavePool(

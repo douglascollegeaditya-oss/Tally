@@ -61,7 +61,7 @@ export function SegmentedTally({
             return (
               <div
                 key={idx}
-                className={`h-7 flex items-center justify-center border font-mono text-xs font-semibold transition-colors ${
+                className={`tally-segment h-7 flex items-center justify-center border font-mono text-xs font-semibold ${
                   filled
                     ? isComplete
                       ? 'bg-[#152B23] border-[#152B23] text-[#FFBF32]'
@@ -99,7 +99,7 @@ export function SegmentedTally({
             return (
               <div
                 key={idx}
-                className={`h-8 flex items-center justify-center border font-mono text-[10px] font-semibold tracking-tight ${
+                className={`tally-segment h-8 flex items-center justify-center border font-mono text-[10px] font-semibold tracking-tight ${
                   filled
                     ? isLastFilled
                       ? 'bg-[#FFBF32] border-[#152B23] text-[#152B23]'
@@ -147,7 +147,7 @@ export function SegmentedTally({
           return (
             <div
               key={idx}
-              className={`${compact ? 'h-2.5' : 'h-3.5'} border transition-colors ${
+              className={`tally-segment ${compact ? 'h-2.5' : 'h-3.5'} border ${
                 filled
                   ? isLastFilled
                     ? 'bg-[#FFBF32] border-[#152B23]'

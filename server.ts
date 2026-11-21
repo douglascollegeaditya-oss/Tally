@@ -372,10 +372,15 @@ async function startServer() {
 
       const candidates = findSimilarPoolsInSession(state, role, actor.id, queryInput);
       const referencePools = findReferenceOnlyPoolsInSession(state, role, actor.id, queryInput);
+      const hasExactTextMatch = candidates.some((c) => !c.isApproximateMatch);
+      const suggestedQuery = !hasExactTextMatch
+        ? candidates.find((c) => c.isApproximateMatch && c.suggestedQuery)?.suggestedQuery
+        : undefined;
 
       res.json({
         candidates,
         referencePools,
+        suggestedQuery,
         checkedPoolCount: state.pools.length,
         checkedAt: state.demoNow,
       });
@@ -491,6 +496,8 @@ async function startServer() {
       saveSession(outcome.state);
       res.json({
         eligibility: outcome.data.eligibility,
+        isNewJoin: outcome.data.isNewJoin,
+        targetReachedNow: outcome.data.targetReachedNow,
         session: buildClientSessionResponse(outcome.state, role),
       });
     })

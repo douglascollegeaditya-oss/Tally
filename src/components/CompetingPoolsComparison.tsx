@@ -50,6 +50,8 @@ interface CompetingPoolsComparisonProps {
   onRefreshCandidates?: () => void;
   referencePool?: ClientPool | null;
   querySummary?: ComparisonQuerySummary | null;
+  suggestedQuery?: string | null;
+  onApplySuggestion?: (suggestedQuery: string) => void;
   emptyTitle?: string;
   emptyDescription?: string;
   createAlertHref?: string;
@@ -409,20 +411,42 @@ function CandidateCard({
         </div>
       )}
 
-      {/* Explainability: Clearly Separate Verified Evidence, Mismatches, and Unspecified Criteria */}
+      {/* Explainability: Clearly Separate Verified Evidence, Approximate Text Interpretation, Mismatches, and Unspecified Criteria */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-        <div className="p-3 bg-[#F7F5EE] border border-[#CDD6CC] space-y-1.5">
-          <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#1E4334]">
-            Verified in your search
-          </p>
-          <ul className="space-y-1 text-[#152B23]">
-            {candidate.matchReasons.map((reason, idx) => (
-              <li key={idx} className="flex items-start gap-1.5 leading-snug">
-                <Check className="w-3.5 h-3.5 text-[#1E4334] shrink-0 mt-0.5" aria-hidden="true" />
-                <span>{reason}</span>
-              </li>
-            ))}
-          </ul>
+        <div className="space-y-2.5">
+          {candidate.matchReasons.length > 0 && (
+            <div className="p-3 bg-[#F7F5EE] border border-[#CDD6CC] space-y-1.5">
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#1E4334]">
+                Verified in your search
+              </p>
+              <ul className="space-y-1 text-[#152B23]">
+                {candidate.matchReasons.map((reason, idx) => (
+                  <li key={idx} className="flex items-start gap-1.5 leading-snug">
+                    <Check className="w-3.5 h-3.5 text-[#1E4334] shrink-0 mt-0.5" aria-hidden="true" />
+                    <span>{reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {candidate.isApproximateMatch &&
+            candidate.approximateInterpretations &&
+            candidate.approximateInterpretations.length > 0 && (
+              <div className="p-3 bg-[#FFFDF5] border border-[#D49B00] space-y-1.5">
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#6B4A00]">
+                  Approximate match interpretation
+                </p>
+                <ul className="space-y-1 text-[#152B23]">
+                  {candidate.approximateInterpretations.map((note, idx) => (
+                    <li key={idx} className="flex items-start gap-1.5 leading-snug">
+                      <Info className="w-3.5 h-3.5 text-[#8A5A00] shrink-0 mt-0.5" aria-hidden="true" />
+                      <span>{note}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
         </div>
 
         <div className="space-y-2.5">
@@ -464,7 +488,8 @@ function CandidateCard({
             </div>
           )}
 
-          {candidate.differences.length === 0 &&
+          {!candidate.isApproximateMatch &&
+            candidate.differences.length === 0 &&
             (!candidate.unspecifiedChecks || candidate.unspecifiedChecks.length === 0) && (
               <div className="p-3 bg-[#EFF3ED] border border-[#8C9A86] space-y-1">
                 <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#1E4334]">
@@ -702,6 +727,8 @@ export function CompetingPoolsComparison({
   onRefreshCandidates,
   referencePool,
   querySummary,
+  suggestedQuery,
+  onApplySuggestion,
   emptyTitle = 'No compatible open pool found',
   emptyDescription = 'No existing open pools in this session match your item, category, and specifications.',
   createAlertHref,
@@ -714,6 +741,9 @@ export function CompetingPoolsComparison({
   ).length;
   const unavailableCount = candidates.length - openCount;
   const allUnavailable = candidates.length > 0 && openCount === 0;
+  const hasExactTextCandidate = candidates.some((c) => !c.isApproximateMatch);
+  const activeSuggestion =
+    !hasExactTextCandidate && suggestedQuery ? suggestedQuery : null;
 
   return (
     <div className="space-y-4">
@@ -915,6 +945,22 @@ export function CompetingPoolsComparison({
       {/* Compatible Candidate List */}
       {!loading && !error && candidates.length > 0 && (
         <div className="space-y-4">
+          {activeSuggestion && onApplySuggestion && (
+            <div className="p-3 bg-[#FFFDF5] border border-[#D49B00] flex flex-wrap items-center justify-between gap-2 text-xs">
+              <p className="text-[#152B23]">
+                Showing approximate matches for{' '}
+                <strong>&ldquo;{querySummary?.title}&rdquo;</strong>.
+              </p>
+              <button
+                type="button"
+                onClick={() => onApplySuggestion(activeSuggestion)}
+                className="px-3 py-1.5 bg-white hover:bg-[#1E4334] text-[#152B23] hover:text-white border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider cursor-pointer transition-colors"
+              >
+                Search &ldquo;{activeSuggestion}&rdquo;
+              </button>
+            </div>
+          )}
+
           <div
             role="status"
             aria-live="polite"
@@ -925,7 +971,7 @@ export function CompetingPoolsComparison({
               {openCount > 0 ? ` · ${openCount} open` : ''}
               {unavailableCount > 0 ? ` · ${unavailableCount} unavailable/ended` : ''}
             </span>
-            <span>Ranked by verified fit, availability &amp; published quote</span>
+            <span>Ranked by exactness, verified fit &amp; published quote</span>
           </div>
 
           <div className="space-y-4">
@@ -949,9 +995,9 @@ export function CompetingPoolsComparison({
               Reference only — incompatible variant ({referencePools.length})
             </h3>
             <p className="text-xs text-[#4E6359]">
-              These same-category pools are for a different trim, powertrain, unit size, or SKU.
-              They are excluded from your compatible matches so groups stay uniform for seller
-              quotes.
+              These same-category pools are for a different model year, trim, powertrain,
+              drivetrain, unit size, or SKU. They are excluded from your compatible matches so
+              groups stay uniform for seller quotes.
             </p>
           </div>
           <div className="space-y-3">

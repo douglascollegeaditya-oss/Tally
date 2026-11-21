@@ -5,6 +5,7 @@ import {
   Bookmark,
   Calendar,
   Check,
+  Info,
   MapPin,
   Scale,
   Search,
@@ -13,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { buildQueryFromPool, findCompetingPoolCounts } from '../domain/competingPoolsEngine.ts';
+import { searchPoolsForExplore } from '../domain/searchMatcher.ts';
 import {
   POOL_CATEGORIES,
   type PoolCategory,
@@ -213,12 +215,14 @@ export function ExplorePage() {
   );
   const [compareCandidates, setCompareCandidates] = useState<SimilarPoolCandidate[]>([]);
   const [compareReferencePools, setCompareReferencePools] = useState<SimilarPoolReference[]>([]);
+  const [compareSuggestedQuery, setCompareSuggestedQuery] = useState<string | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
 
   // Automatic matcher lookup when Explore shows 0 results for a typed search
   const [emptyMatchCandidates, setEmptyMatchCandidates] = useState<SimilarPoolCandidate[]>([]);
   const [emptyReferencePools, setEmptyReferencePools] = useState<SimilarPoolReference[]>([]);
+  const [emptySuggestedQuery, setEmptySuggestedQuery] = useState<string | null>(null);
   const [emptyMatchLoading, setEmptyMatchLoading] = useState(false);
   const [emptyMatchError, setEmptyMatchError] = useState<string | null>(null);
 
@@ -250,43 +254,43 @@ export function ExplorePage() {
   const trimmedQuery = query.trim();
   const trimmedVariant = variant.trim();
 
-  const filteredPools = useMemo(() => {
-    const q = trimmedQuery.toLowerCase();
-    const v = trimmedVariant.toLowerCase();
-    return pools.filter((pool) => {
-      if (category !== 'All' && pool.category !== category) return false;
-      if (location !== 'All locations' && pool.location !== location) return false;
-      if (!matchesStageFilter(pool, stageFilter)) return false;
-      if (!matchesWindowFilter(pool, windowFilter, demoNow)) return false;
+  // Apply stage & window filters first, then run shared deterministic searchMatcher for query/variant
+  const stageAndWindowPools = useMemo(
+    () =>
+      pools.filter(
+        (pool) =>
+          matchesStageFilter(pool, stageFilter) &&
+          matchesWindowFilter(pool, windowFilter, demoNow)
+      ),
+    [pools, stageFilter, windowFilter, demoNow]
+  );
 
-      const optionText = pool.optionGroups.flatMap((g) => [g.label, ...g.allowedValues]).join(' ');
-      const specText = pool.categorySpecs.map((s) => `${s.label} ${s.value}`).join(' ');
+  const exploreSearch = useMemo(
+    () =>
+      searchPoolsForExplore(stageAndWindowPools, {
+        query: trimmedQuery,
+        variant: trimmedVariant,
+        category,
+        location,
+      }),
+    [stageAndWindowPools, trimmedQuery, trimmedVariant, category, location]
+  );
 
-      if (q) {
-        const hay = [
-          pool.title,
-          pool.subtitle,
-          pool.category,
-          pool.location,
-          pool.deliveryOrDestination,
-          pool.unitPlural,
-          pool.currentOffer?.sellerName ?? '',
-          optionText,
-          specText,
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
+  const filteredPools = useMemo(
+    () => exploreSearch.results.map((r) => r.pool),
+    [exploreSearch]
+  );
 
-      if (v) {
-        const variantHay = [pool.title, optionText, specText].join(' ').toLowerCase();
-        if (!variantHay.includes(v)) return false;
-      }
-
-      return true;
-    });
-  }, [pools, category, location, stageFilter, windowFilter, demoNow, trimmedQuery, trimmedVariant]);
+  const exploreMatchByPoolId = useMemo(() => {
+    const map = new Map<
+      string,
+      { matchKind: 'all' | 'exact' | 'approximate'; interpretations: string[] }
+    >();
+    for (const r of exploreSearch.results) {
+      map.set(r.pool.id, { matchKind: r.matchKind, interpretations: r.interpretations });
+    }
+    return map;
+  }, [exploreSearch]);
 
   const hasActiveFilter =
     trimmedQuery !== '' ||
@@ -296,13 +300,17 @@ export function ExplorePage() {
     stageFilter !== 'all' ||
     windowFilter !== 'all';
 
-  // Feature Ford Maverick XLT prominently whenever it is in the filtered set
-  const featuredPool = useMemo(
-    () =>
+  const hasTypedSearch = trimmedQuery !== '' || trimmedVariant !== '';
+
+  // Keep Featured hero when browsing directory; during typed search render results in strict ranked order
+  // so exact matches ALWAYS appear above approximate candidates (never promoting an approximate hit into Featured).
+  const featuredPool = useMemo(() => {
+    if (hasTypedSearch) return undefined;
+    return (
       filteredPools.find((p) => p.id === 'pool-maverick-xlt') ??
-      (!hasActiveFilter ? filteredPools[0] : undefined),
-    [filteredPools, hasActiveFilter]
-  );
+      (!hasActiveFilter ? filteredPools[0] : undefined)
+    );
+  }, [filteredPools, hasActiveFilter, hasTypedSearch]);
 
   const secondaryPools = useMemo(
     () => (featuredPool ? filteredPools.filter((p) => p.id !== featuredPool.id) : filteredPools),
@@ -356,6 +364,7 @@ export function ExplorePage() {
       const res = await findSimilarPoolsAction(input);
       setCompareCandidates(res.candidates);
       setCompareReferencePools(res.referencePools ?? []);
+      setCompareSuggestedQuery(res.suggestedQuery ?? null);
     } catch (err) {
       setCompareError(
         err instanceof ApiRequestError
@@ -372,12 +381,13 @@ export function ExplorePage() {
     setCompareRefPoolId(pool.id);
     setCompareQueryInput(input);
     setCompareQuerySummary(null);
+    setCompareSuggestedQuery(null);
     setCompareOpen(true);
     void executeComparison(input);
   };
 
-  const openSearchComparison = () => {
-    const titleQuery = trimmedQuery || trimmedVariant;
+  const openSearchComparison = (overrideTitle?: string) => {
+    const titleQuery = (overrideTitle ?? trimmedQuery) || trimmedVariant;
     if (!titleQuery) return;
     const input: SimilarPoolQueryInput = {
       title: titleQuery,
@@ -400,6 +410,13 @@ export function ExplorePage() {
     void executeComparison(input);
   };
 
+  const applySuggestedQuery = (nextQuery: string) => {
+    updateParams({ q: nextQuery });
+    if (compareOpen && !compareRefPoolId) {
+      openSearchComparison(nextQuery);
+    }
+  };
+
   // When Explore returns 0 results for a typed search, ask the real matcher for
   // compatible candidates (e.g., hidden by filters) or reference-only incompatible variants.
   const emptyMatcherInput = useMemo<SimilarPoolQueryInput | null>(() => {
@@ -420,6 +437,7 @@ export function ExplorePage() {
     if (!emptyMatcherInput) {
       setEmptyMatchCandidates([]);
       setEmptyReferencePools([]);
+      setEmptySuggestedQuery(null);
       setEmptyMatchLoading(false);
       setEmptyMatchError(null);
       return;
@@ -435,6 +453,7 @@ export function ExplorePage() {
           if (cancelled) return;
           setEmptyMatchCandidates(res.candidates);
           setEmptyReferencePools(res.referencePools ?? []);
+          setEmptySuggestedQuery(res.suggestedQuery ?? null);
         })
         .catch((err) => {
           if (cancelled) return;
@@ -727,6 +746,50 @@ export function ExplorePage() {
             </div>
           )}
 
+          {/* Approximate match disclosure + optional user-selectable suggestion (never auto-rewrites input) */}
+          {hasTypedSearch && filteredPools.length > 0 && exploreSearch.hasApproximateMatches && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3.5 bg-[#FFFDF5] border border-[#D49B00]"
+            >
+              <div className="flex items-start gap-2 text-xs text-[#152B23] leading-relaxed">
+                <Info className="w-4 h-4 text-[#8A5A00] shrink-0 mt-0.5" aria-hidden="true" />
+                <div>
+                  <p>
+                    {exploreSearch.hasExactMatches ? (
+                      <>
+                        Exact matches for <strong>&ldquo;{alertQueryValue}&rdquo;</strong> are
+                        shown first, followed by possible matches using approximate text
+                        matching.
+                      </>
+                    ) : (
+                      <>
+                        Showing <strong>possible matches</strong> for{' '}
+                        <strong>&ldquo;{alertQueryValue}&rdquo;</strong> using approximate text
+                        matching — verify item specifications before joining.
+                      </>
+                    )}
+                  </p>
+                  {exploreSearch.approximateInterpretations.length > 0 && (
+                    <p className="mt-0.5 font-mono text-[11px] text-[#6B4A00]">
+                      {exploreSearch.approximateInterpretations.slice(0, 3).join(' · ')}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {exploreSearch.suggestedQuery && !exploreSearch.hasExactMatches && (
+                <button
+                  type="button"
+                  onClick={() => applySuggestedQuery(exploreSearch.suggestedQuery!)}
+                  className="inline-flex items-center justify-center px-3 py-1.5 bg-white hover:bg-[#1E4334] text-[#152B23] hover:text-white border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                >
+                  Search &ldquo;{exploreSearch.suggestedQuery}&rdquo;
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Typed search prompt: compare matching pools side-by-side or save an item alert */}
           {(trimmedQuery.length > 0 || trimmedVariant.length > 0) && filteredPools.length > 0 && (
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-[#EFF3ED] border border-[#8C9A86]">
@@ -739,7 +802,7 @@ export function ExplorePage() {
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={openSearchComparison}
+                  onClick={() => openSearchComparison()}
                   className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#FFBF32] hover:bg-[#F2B01E] text-[#152B23] border border-[#152B23] font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer transition-colors"
                 >
                   <Scale className="w-3.5 h-3.5" aria-hidden="true" />
@@ -802,6 +865,8 @@ export function ExplorePage() {
             }}
             referencePool={compareRefPool}
             querySummary={compareQuerySummary}
+            suggestedQuery={!compareRefPool ? compareSuggestedQuery : null}
+            onApplySuggestion={!compareRefPool ? applySuggestedQuery : undefined}
             emptyTitle="No compatible open pool found"
             emptyDescription="No open buying pools in this session match those exact item terms, category, and specifications. Adjust your search, create an alert for future pools, or start a separate pool."
             createAlertHref={createAlertHref}
@@ -830,6 +895,8 @@ export function ExplorePage() {
               error={emptyMatchError}
               onRetry={() => setEmptyRetryNonce((n) => n + 1)}
               querySummary={activeCriteriaSummary}
+              suggestedQuery={emptySuggestedQuery}
+              onApplySuggestion={applySuggestedQuery}
               emptyTitle="No compatible open pool found"
               emptyDescription="No open pool matches your search criteria right now. You can adjust your search, save an in-app item alert for future pools, or start a separate pool."
               createAlertHref={createAlertHref}
@@ -1059,6 +1126,8 @@ export function ExplorePage() {
                   const dest = getPoolPrimaryDestination(pool, actorId, role);
                   const ctaLabel = getPoolPrimaryCtaLabel(pool, actorId, role);
                   const variantSummary = extractVariantSummary(pool);
+                  const matchMeta = exploreMatchByPoolId.get(pool.id);
+                  const isApproxCard = matchMeta?.matchKind === 'approximate';
 
                   return (
                     <article
@@ -1066,9 +1135,11 @@ export function ExplorePage() {
                       className={`border flex flex-col justify-between transition-transform hover:-translate-y-0.5 ${
                         isUnlocked
                           ? 'bg-white border-[#1E4334] shadow-[3px_3px_0px_#152B23]'
-                          : isUnavailable
-                            ? 'bg-[#FBF9F4] border-[#CDD6CC]'
-                            : 'bg-white border-[#CDD6CC]'
+                          : isApproxCard
+                            ? 'bg-white border-[#D49B00]'
+                            : isUnavailable
+                              ? 'bg-[#FBF9F4] border-[#CDD6CC]'
+                              : 'bg-white border-[#CDD6CC]'
                       }`}
                     >
                       {pool.imageUrl && (
@@ -1089,6 +1160,19 @@ export function ExplorePage() {
 
                       <div className="p-4 sm:p-5 flex-1 flex flex-col justify-between gap-4">
                         <div className="space-y-2">
+                          {isApproxCard && (
+                            <div className="px-2.5 py-1.5 bg-[#FFFDF5] border border-[#D49B00] space-y-0.5">
+                              <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#A63A2B]">
+                                Possible match
+                              </p>
+                              {matchMeta.interpretations.length > 0 && (
+                                <p className="font-mono text-[10px] text-[#6B4A00] leading-snug">
+                                  {matchMeta.interpretations.join(' · ')}
+                                </p>
+                              )}
+                            </div>
+                          )}
+
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#4E6359]">
                               {pool.category}

@@ -1,4 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  advanceCelebration,
+  buildJoinCelebrationEvents,
+  buildOfferUnlockCelebrationEvent,
+  clearPoolJoinSeenKey,
+  clearSessionCelebrationHistory,
+  createInitialCelebrationState,
+  dismissAllCelebrations,
+  enqueueCelebrations,
+  type CelebrationEvent,
+  type CelebrationQueueState,
+} from '../domain/celebrationEngine.ts';
 import type {
   ActivityEvent,
   AlertNotification,
@@ -26,6 +38,7 @@ export interface ClientPool extends Pool {
 export interface SimilarPoolsResponse {
   candidates: SimilarPoolCandidate[];
   referencePools: SimilarPoolReference[];
+  suggestedQuery?: string;
   checkedPoolCount: number;
   checkedAt: string;
 }
@@ -84,7 +97,32 @@ export interface ClaimPassResponse {
 
 const STORAGE_SESSION_KEY = 'tally_demo_session_id_v1';
 const STORAGE_ROLE_KEY = 'tally_demo_role_v1';
+const STORAGE_CELEBRATION_SEEN_KEY = 'tally_seen_celebrations_v1';
 const SYNC_CHANNEL = 'tally-session-sync';
+
+function loadSeenCelebrationKeys(): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(STORAGE_CELEBRATION_SEEN_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string').slice(-100)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSeenCelebrationKeys(keys: string[]): void {
+  try {
+    window.sessionStorage.setItem(
+      STORAGE_CELEBRATION_SEEN_KEY,
+      JSON.stringify(keys.slice(-100))
+    );
+  } catch {
+    // Ignore storage quota or private-mode restrictions
+  }
+}
 
 function generateSessionId(): string {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -135,6 +173,12 @@ interface TallyContextValue {
   banner: { kind: 'info' | 'success' | 'error'; text: string } | null;
   clearBanner: () => void;
   showBanner: (kind: 'info' | 'success' | 'error', text: string) => void;
+  activeCelebration: CelebrationEvent | null;
+  queuedCelebrationCount: number;
+  celebrationStepIndex: number;
+  celebrationTotalSteps: number;
+  advanceCelebrationAction: () => void;
+  dismissAllCelebrationsAction: () => void;
   setRole: (role: PersonaRole) => void;
   switchSessionId: (nextId: string) => void;
   createIsolatedSession: () => void;
@@ -187,7 +231,69 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
   const [banner, setBanner] = useState<{ kind: 'info' | 'success' | 'error'; text: string } | null>(
     null
   );
+  const [celebrationStore, setCelebrationStore] = useState<{
+    queueState: CelebrationQueueState;
+    stepIndex: number;
+    totalSteps: number;
+  }>(() => ({
+    queueState: createInitialCelebrationState(loadSeenCelebrationKeys()),
+    stepIndex: 0,
+    totalSteps: 0,
+  }));
   const channelRef = useRef<BroadcastChannel | null>(null);
+
+  useEffect(() => {
+    saveSeenCelebrationKeys(celebrationStore.queueState.seenKeys);
+  }, [celebrationStore.queueState.seenKeys]);
+
+  const enqueueCelebrationBatch = useCallback((events: CelebrationEvent[]) => {
+    if (events.length === 0) return;
+    setCelebrationStore((prev) => {
+      const nextQueue = enqueueCelebrations(prev.queueState, events);
+      if (nextQueue === prev.queueState) return prev;
+      const prevLen = (prev.queueState.active ? 1 : 0) + prev.queueState.queue.length;
+      const nextLen = (nextQueue.active ? 1 : 0) + nextQueue.queue.length;
+      const addedCount = nextLen - prevLen;
+      if (addedCount <= 0) {
+        return { ...prev, queueState: nextQueue };
+      }
+      if (!prev.queueState.active) {
+        return {
+          queueState: nextQueue,
+          stepIndex: 1,
+          totalSteps: addedCount,
+        };
+      }
+      return {
+        queueState: nextQueue,
+        stepIndex: Math.max(1, prev.stepIndex),
+        totalSteps: prev.totalSteps + addedCount,
+      };
+    });
+  }, []);
+
+  const advanceCelebrationAction = useCallback(() => {
+    setCelebrationStore((prev) => {
+      const nextQueue = advanceCelebration(prev.queueState);
+      if (!nextQueue.active) {
+        return { queueState: nextQueue, stepIndex: 0, totalSteps: 0 };
+      }
+      const total = Math.max(1, prev.totalSteps);
+      return {
+        queueState: nextQueue,
+        stepIndex: Math.min(Math.max(1, prev.stepIndex + 1), total),
+        totalSteps: total,
+      };
+    });
+  }, []);
+
+  const dismissAllCelebrationsAction = useCallback(() => {
+    setCelebrationStore((prev) => ({
+      queueState: dismissAllCelebrations(prev.queueState),
+      stepIndex: 0,
+      totalSteps: 0,
+    }));
+  }, []);
 
   const showBanner = useCallback((kind: 'info' | 'success' | 'error', text: string) => {
     setBanner({ kind, text });
@@ -282,19 +388,24 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
     setRoleState(nextRole);
   }, []);
 
-  const switchSessionId = useCallback((nextId: string) => {
-    const clean = nextId.trim();
-    if (!/^[a-zA-Z0-9_-]{3,48}$/.test(clean)) return;
-    window.localStorage.setItem(STORAGE_SESSION_KEY, clean);
-    setSessionId(clean);
-  }, []);
+  const switchSessionId = useCallback(
+    (nextId: string) => {
+      const clean = nextId.trim();
+      if (!/^[a-zA-Z0-9_-]{3,48}$/.test(clean)) return;
+      window.localStorage.setItem(STORAGE_SESSION_KEY, clean);
+      dismissAllCelebrationsAction();
+      setSessionId(clean);
+    },
+    [dismissAllCelebrationsAction]
+  );
 
   const createIsolatedSession = useCallback(() => {
     const fresh = generateSessionId();
     window.localStorage.setItem(STORAGE_SESSION_KEY, fresh);
+    dismissAllCelebrationsAction();
     setSessionId(fresh);
     showBanner('info', `Started isolated demo session ${fresh}.`);
-  }, [showBanner]);
+  }, [dismissAllCelebrationsAction, showBanner]);
 
   const runMutation = useCallback(
     async <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -318,10 +429,15 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
           body: { scenarioId },
         });
         setSession(next);
+        setCelebrationStore((prev) => ({
+          queueState: clearSessionCelebrationHistory(prev.queueState, sessionId),
+          stepIndex: 0,
+          totalSteps: 0,
+        }));
         showBanner('info', `Loaded deterministic scenario: ${scenarioId}.`);
       });
     },
-    [apiFetch, runMutation, showBanner]
+    [apiFetch, runMutation, sessionId, showBanner]
   );
 
   const resetDemo = useCallback(async () => {
@@ -330,6 +446,11 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
         method: 'POST',
       });
       setSession(next);
+      setCelebrationStore((prev) => ({
+        queueState: clearSessionCelebrationHistory(prev.queueState, sessionId),
+        stepIndex: 0,
+        totalSteps: 0,
+      }));
       showBanner('info', `Reset session ${sessionId} back to its clean seed state.`);
     });
   }, [apiFetch, runMutation, sessionId, showBanner]);
@@ -363,14 +484,28 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       await runMutation(async () => {
         const res = await apiFetch<{
           eligibility: { eligible: boolean; reasons: string[] };
+          isNewJoin?: boolean;
+          targetReachedNow?: boolean;
           session: ClientSessionResponse;
         }>(`/api/pools/${encodeURIComponent(poolId)}/join`, {
           method: 'POST',
           body: input,
         });
         setSession(res.session);
+        const updatedPool = res.session.pools.find((p) => p.id === poolId);
         if (res.eligibility.eligible) {
           showBanner('success', 'Your compatible commitment is recorded in the live tally.');
+          const celebrations = buildJoinCelebrationEvents({
+            ok: true,
+            sessionId,
+            actorId: res.session.actor.id,
+            isNewJoin: Boolean(res.isNewJoin),
+            eligible: res.eligibility.eligible,
+            targetReachedNow: Boolean(res.targetReachedNow),
+            quantityJoined: input.quantity,
+            pool: updatedPool,
+          });
+          enqueueCelebrationBatch(celebrations);
         } else {
           showBanner(
             'error',
@@ -379,7 +514,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
         }
       });
     },
-    [apiFetch, runMutation, showBanner]
+    [apiFetch, enqueueCelebrationBatch, runMutation, sessionId, showBanner]
   );
 
   const leavePoolAction = useCallback(
@@ -390,10 +525,14 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
           { method: 'POST' }
         );
         setSession(res.session);
+        setCelebrationStore((prev) => ({
+          ...prev,
+          queueState: clearPoolJoinSeenKey(prev.queueState, sessionId, poolId, res.session.actor.id),
+        }));
         showBanner('info', 'You left the pool and the tally has been updated.');
       });
     },
-    [apiFetch, runMutation, showBanner]
+    [apiFetch, runMutation, sessionId, showBanner]
   );
 
   const postDiscussionAction = useCallback(
@@ -483,6 +622,18 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
         setSession(res.session);
         if (res.unlockedNow) {
           showBanner('success', 'Minimum reached — your group price is unlocked!');
+          const updatedPool = res.session.pools.find((p) => p.id === poolId);
+          const unlockEvent = buildOfferUnlockCelebrationEvent({
+            ok: true,
+            sessionId,
+            unlockedNow: res.unlockedNow,
+            waitlisted: res.waitlisted,
+            pool: updatedPool,
+            canOpenClaimPass: role === 'buyer',
+          });
+          if (unlockEvent) {
+            enqueueCelebrationBatch([unlockEvent]);
+          }
         } else if (res.waitlisted) {
           showBanner('info', 'Offer cap reached. You have been added to the waitlist.');
         } else {
@@ -491,7 +642,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
         return { unlockedNow: res.unlockedNow, waitlisted: res.waitlisted };
       });
     },
-    [apiFetch, runMutation, showBanner]
+    [apiFetch, enqueueCelebrationBatch, role, runMutation, sessionId, showBanner]
   );
 
   const withdrawConfirmationAction = useCallback(
@@ -630,6 +781,27 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
           body: { poolId },
         });
         setSession(res.session);
+        if (res.unlockedNow) {
+          const updatedPool = res.session.pools.find((p) => p.id === poolId);
+          const actorMember = updatedPool?.members.find((m) => m.userId === res.session.actor.id);
+          const canOpenClaimPass =
+            role === 'buyer' &&
+            Boolean(
+              actorMember &&
+                (actorMember.status === 'confirmed' || actorMember.status === 'fulfilled')
+            );
+          const unlockEvent = buildOfferUnlockCelebrationEvent({
+            ok: true,
+            sessionId,
+            unlockedNow: res.unlockedNow,
+            waitlisted: false,
+            pool: updatedPool,
+            canOpenClaimPass,
+          });
+          if (unlockEvent) {
+            enqueueCelebrationBatch([unlockEvent]);
+          }
+        }
         showBanner(
           'info',
           res.unlockedNow
@@ -639,7 +811,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
         return { unlockedNow: res.unlockedNow, simulatedLabel: res.simulatedLabel };
       });
     },
-    [apiFetch, runMutation, showBanner]
+    [apiFetch, enqueueCelebrationBatch, role, runMutation, sessionId, showBanner]
   );
 
   const advanceClockAction = useCallback(
@@ -685,6 +857,12 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       banner,
       clearBanner,
       showBanner,
+      activeCelebration: celebrationStore.queueState.active,
+      queuedCelebrationCount: celebrationStore.queueState.queue.length,
+      celebrationStepIndex: celebrationStore.stepIndex,
+      celebrationTotalSteps: celebrationStore.totalSteps,
+      advanceCelebrationAction,
+      dismissAllCelebrationsAction,
       setRole,
       switchSessionId,
       createIsolatedSession,
@@ -724,6 +902,12 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       banner,
       clearBanner,
       showBanner,
+      celebrationStore.queueState.active,
+      celebrationStore.queueState.queue.length,
+      celebrationStore.stepIndex,
+      celebrationStore.totalSteps,
+      advanceCelebrationAction,
+      dismissAllCelebrationsAction,
       setRole,
       switchSessionId,
       createIsolatedSession,

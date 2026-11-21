@@ -54,10 +54,242 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* High-visibility editorial keyboard focus ring (spruce ink + warm amber halo) */
   *:focus-visible {
     outline: 2px solid #1E4334;
     outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(255, 191, 50, 0.5);
   }
+
+  /* Restrained, tactile press-print interaction feedback across enabled buttons & interactive links */
+  button:not(:disabled),
+  a[href],
+  summary {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition-property: transform, background-color, border-color, color, box-shadow, opacity;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Crisp tactile press on enabled buttons — compositor transform only, zero layout shift */
+  button:not(:disabled):active {
+    transform: translateY(1px) scale(0.985);
+  }
+
+  /* Subtle tactile lift for bordered button-like controls on fine pointers (hover devices) */
+  @media (hover: hover) and (pointer: fine) {
+    button:not(:disabled)[class*="border"]:hover,
+    a[href][class*="border"]:hover {
+      box-shadow: 2px 2px 0px rgba(21, 43, 35, 0.24);
+    }
+
+    button:not(:disabled)[class*="border"]:active,
+    a[href][class*="border"]:active {
+      transform: translateY(1px) scale(0.985);
+      box-shadow: 0px 0px 0px rgba(21, 43, 35, 0.12);
+    }
+
+    a[href][class*="bg-[#FFBF32]"]:hover,
+    button:not(:disabled)[class*="bg-[#FFBF32]"]:hover {
+      box-shadow: 2px 2px 0px #152B23;
+    }
+
+    a[href][class*="bg-[#FFBF32]"]:active,
+    button:not(:disabled)[class*="bg-[#FFBF32]"]:active {
+      transform: translateY(1px) scale(0.985);
+      box-shadow: 0px 0px 0px #152B23;
+    }
+
+    a[href][class*="bg-[#1E4334]"]:hover,
+    button:not(:disabled)[class*="bg-[#1E4334]"]:hover,
+    a[href][class*="bg-[#152B23]"]:hover,
+    button:not(:disabled)[class*="bg-[#152B23]"]:hover {
+      box-shadow: 2px 2px 0px rgba(255, 191, 50, 0.72);
+    }
+
+    a[href][class*="bg-[#1E4334]"]:active,
+    button:not(:disabled)[class*="bg-[#1E4334]"]:active,
+    a[href][class*="bg-[#152B23]"]:active,
+    button:not(:disabled)[class*="bg-[#152B23]"]:active {
+      transform: translateY(1px) scale(0.985);
+      box-shadow: 0px 0px 0px rgba(255, 191, 50, 0.2);
+    }
+  }
+
+  /* Ensure touch taps on bordered CTA links also give crisp pressed feedback */
+  a[href][class*="border"]:active {
+    transform: translateY(1px) scale(0.985);
+  }
+
+  /* Form controls: calm border & focus response without motion jitter */
+  input:not(:disabled),
+  select:not(:disabled),
+  textarea:not(:disabled) {
+    transition-property: border-color, background-color, box-shadow;
+    transition-duration: 140ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Disabled controls must NEVER animate, lift, or press */
+  button:disabled,
+  input:disabled,
+  select:disabled,
+  textarea:disabled,
+  [aria-disabled="true"] {
+    transition: none !important;
+    transform: none !important;
+    box-shadow: none !important;
+    cursor: not-allowed;
+  }
+}
+
+/* Dark-surface keyboard focus override (used on deep spruce celebration stage & dark CTAs) */
+.tally-focus-dark:focus-visible {
+  outline: 2px solid #FFBF32 !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(255, 191, 50, 0.32) !important;
+}
+
+/* Segmented tally fill transitions */
+.tally-segment {
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 220ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Editorial Celebration Keyframes — compositor-only transform/opacity, zero flashing */
+@keyframes tally-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tally-ticket-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes tally-stamp-slam {
+  0% {
+    opacity: 0;
+    transform: scale(1.42) rotate(-10deg);
+  }
+  68% {
+    opacity: 1;
+    transform: scale(0.97) rotate(-2.5deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-3deg);
+  }
+}
+
+@keyframes tally-broadsheet-in {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.93);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes tally-seal-settle {
+  0% {
+    opacity: 0;
+    transform: scale(0.72) rotate(-12deg);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.04) rotate(2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes tally-rule-sweep {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes tally-gold-ray-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.68);
+  }
+  to {
+    opacity: 0.34;
+    transform: scale(1);
+  }
+}
+
+@keyframes tally-slip-burst {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(0.5);
+  }
+  14% {
+    opacity: 1;
+  }
+  78% {
+    opacity: 0.92;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--tx, 0px), var(--ty, -120px), 0) rotate(var(--rot, 90deg)) scale(1);
+  }
+}
+
+.tally-anim-backdrop {
+  animation: tally-backdrop-in 210ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tally-anim-ticket {
+  animation: tally-ticket-in 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tally-anim-stamp {
+  animation: tally-stamp-slam 440ms cubic-bezier(0.16, 1, 0.3, 1) 90ms both;
+}
+
+.tally-anim-broadsheet {
+  animation: tally-broadsheet-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tally-anim-seal {
+  animation: tally-seal-settle 480ms cubic-bezier(0.16, 1, 0.3, 1) 110ms both;
+}
+
+.tally-anim-rule {
+  transform-origin: center;
+  animation: tally-rule-sweep 420ms cubic-bezier(0.16, 1, 0.3, 1) 120ms both;
+}
+
+.tally-anim-rays {
+  animation: tally-gold-ray-reveal 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tally-anim-slip {
+  animation: tally-slip-burst 1450ms cubic-bezier(0.12, 0.84, 0.28, 1) var(--delay, 0ms) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -66,5 +298,15 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  button:not(:disabled):active,
+  a[href]:active {
+    transform: none !important;
+  }
+
+  .tally-anim-slip,
+  .tally-anim-rays {
+    display: none !important;
   }
 }

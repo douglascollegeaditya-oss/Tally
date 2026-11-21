@@ -394,6 +394,9 @@ export interface SimilarPoolCandidate {
   differences: string[];
   unspecifiedChecks: string[];
   specFit: 'verified' | 'unverified';
+  isApproximateMatch?: boolean;
+  approximateInterpretations?: string[];
+  suggestedQuery?: string;
   locationFit: 'match' | 'nationwide' | 'different' | 'unspecified';
   timingFit: 'close' | 'moderate' | 'far' | 'unspecified';
   timingDeltaDays: number | null;

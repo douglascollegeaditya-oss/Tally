@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { MapPin, SlidersHorizontal, X } from 'lucide-react';
 import { useTally } from '../lib/api.ts';
 import { Link, useRouter } from '../lib/router.tsx';
+import { CelebrationOverlay } from './CelebrationOverlay.tsx';
 import { DemoControls } from './DemoControls.tsx';
 
 export const LOCATION_OPTIONS = [
@@ -243,6 +244,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </footer>
 
       <DemoControls open={demoOpen} onClose={() => setDemoOpen(false)} />
+      <CelebrationOverlay />
     </div>
   );
 }

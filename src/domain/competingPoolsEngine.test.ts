@@ -158,16 +158,21 @@ test('uncertain or broad matches are labeled possible_match rather than strong_m
   assert.equal(broad[0].matchLevel, 'possible_match');
   assert.match(broad[0].matchLabel, /Possible match/i);
 
-  // Model year mismatch (2025 vs 2026)
-  const wrongYear = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', {
-    category: 'Vehicles',
+  // Explicit model year mismatch (2025 vs 2026-only pool) is strictly excluded from compatible
+  // candidates (never quick-joinable) and surfaced strictly as reference-only with exact year difference
+  const wrongYearQuery = {
+    category: 'Vehicles' as const,
     title: '2025 Ford Maverick Hybrid XLT AWD',
     location: 'Portland metro',
     goalDate: '2026-12-16',
-  });
-  assert.equal(wrongYear.length, 1);
-  assert.equal(wrongYear[0].matchLevel, 'possible_match');
-  assert.ok(wrongYear[0].differences.some((d) => d.includes('Model year differs')));
+  };
+  const wrongYear = findSimilarPoolsInSession(state, 'buyer', 'buyer-maya', wrongYearQuery);
+  assert.equal(wrongYear.length, 0);
+  const wrongYearRefs = findReferenceOnlyPoolsInSession(state, 'buyer', 'buyer-maya', wrongYearQuery);
+  assert.equal(wrongYearRefs.length, 1);
+  assert.equal(wrongYearRefs[0].pool.id, 'pool-maverick-xlt');
+  assert.equal(wrongYearRefs[0].referenceKind, 'incompatible_variant');
+  assert.match(wrongYearRefs[0].explanation, /Model year differs \(2026 vs 2025\)/i);
 });
 
 test('location and timing rank candidates deterministically and downgrade distant or badly timed pools', () => {
