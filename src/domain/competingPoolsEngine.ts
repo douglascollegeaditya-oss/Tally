@@ -31,7 +31,15 @@ import {
   type SimilarPoolQueryInput,
   type SimilarPoolQuoteSummary,
   type SimilarPoolReference,
+  type VehicleSpecProfile,
 } from './types.ts';
+import {
+  evaluateQuoteCompatibility,
+  evaluateVehicleCompatibility,
+  formatYearRequirement,
+  getVehicleTypeLabel,
+  inferVehicleSignalsFromText,
+} from './vehicleEngine.ts';
 
 export { extractSubstantiveItemTokens };
 
@@ -78,6 +86,32 @@ function collectPoolStructuredItemText(pool: Pool): {
       }
     }
   }
+  if (pool.category === 'Vehicles' && pool.vehicleSpecs) {
+    const vs = pool.vehicleSpecs;
+    for (const val of [
+      vs.assetClass === 'accessory'
+        ? 'accessory'
+        : vs.vehicleType
+          ? getVehicleTypeLabel(vs.vehicleType, true)
+          : undefined,
+      vs.make,
+      vs.model,
+      formatYearRequirement(vs),
+      vs.trim,
+      vs.powertrain,
+      vs.drivetrain,
+      vs.transmission,
+      vs.bodyConfiguration,
+      vs.axleConfiguration,
+      vs.cabOrSleeper,
+      vs.busType,
+      vs.accessibilityRequirement,
+    ]) {
+      if (typeof val === 'string' && val.trim()) {
+        itemSpecTexts.push(val.trim());
+      }
+    }
+  }
 
   const fullItemText = [pool.title, ...allowedOptionTexts, ...itemSpecTexts].join(' ');
   return {
@@ -118,6 +152,27 @@ function collectQueryStructuredItemText(input: SimilarPoolQueryInput): {
       }
     }
   }
+  if (input.vehicleSpecs) {
+    const vs = input.vehicleSpecs;
+    for (const val of [
+      vs.make,
+      vs.model,
+      formatYearRequirement(vs),
+      vs.trim,
+      vs.powertrain,
+      vs.drivetrain,
+      vs.transmission,
+      vs.bodyConfiguration,
+      vs.axleConfiguration,
+      vs.cabOrSleeper,
+      vs.busType,
+      vs.accessibilityRequirement,
+    ]) {
+      if (typeof val === 'string' && val.trim()) {
+        variantTexts.push(val.trim());
+      }
+    }
+  }
 
   const titleText = typeof input.title === 'string' ? input.title.trim() : '';
   const fullItemText = [titleText, ...variantTexts].join(' ');
@@ -142,7 +197,8 @@ function getIncompatibilityReason(
   queryVariantTexts: string[],
   pool: Pool,
   poolStructured: ReturnType<typeof collectPoolStructuredItemText>,
-  poolTokens: Set<string>
+  poolTokens: Set<string>,
+  queryVehicleSpecs?: VehicleSpecProfile
 ): string | null {
   // 1. Check explicitly excluded option values on the candidate pool
   for (const excl of poolStructured.excludedOptionTexts) {
@@ -154,6 +210,15 @@ function getIncompatibilityReason(
 
   // 2. Category-specific structured compatibility gates
   if (pool.category === 'Vehicles') {
+    const reqVeh = inferVehicleSignalsFromText(queryText, queryVehicleSpecs);
+    const poolVeh = inferVehicleSignalsFromText(poolStructured.fullItemText, pool.vehicleSpecs);
+    const vehCompat = evaluateVehicleCompatibility(reqVeh, poolVeh, {
+      mode: 'pool_comparison',
+    });
+    if (!vehCompat.compatible && vehCompat.conflicts.length > 0) {
+      return vehCompat.conflicts[0];
+    }
+
     const trimConflict = getFamilyConflictDetail(queryTokens, poolTokens, VEHICLE_TRIM_FAMILY);
     if (trimConflict) {
       return `Different trim — this pool is for ${trimConflict.poolValues
@@ -357,6 +422,7 @@ function buildQuoteSummary(pool: Pool): SimilarPoolQuoteSummary {
       statusLabel: 'No quote published yet',
     };
   }
+  const quoteCompat = evaluateQuoteCompatibility(pool, offer);
   return {
     hasQuote: true,
     statusLabel: `Seller quote v${offer.version} published`,
@@ -365,6 +431,7 @@ function buildQuoteSummary(pool: Pool): SimilarPoolQuoteSummary {
     sellerLocation: offer.sellerLocation,
     unitPrice: offer.unitPrice,
     knownFees: offer.knownFees,
+    knownFeesUnknown: offer.knownFeesUnknown,
     feeLabel: offer.feeLabel,
     subtotal: offer.subtotal,
     minQuantity: offer.minQuantity,
@@ -375,6 +442,8 @@ function buildQuoteSummary(pool: Pool): SimilarPoolQuoteSummary {
     closeAt: offer.closeAt,
     timezoneLabel: offer.timezoneLabel,
     claimByDate: offer.claimByDate,
+    hasSpecConflicts: !quoteCompat.compatible,
+    specConflicts: quoteCompat.conflicts.length > 0 ? quoteCompat.conflicts : undefined,
   };
 }
 
@@ -429,7 +498,8 @@ function evaluateSpecVerification(
   },
   poolTermSet: Set<string>,
   matchedTitleTerms: string[],
-  poolTitleTerms: string[]
+  poolTitleTerms: string[],
+  queryVehicleSpecs?: VehicleSpecProfile
 ): {
   specFit: 'verified' | 'unverified';
   verifiedReasons: string[];
@@ -446,8 +516,31 @@ function evaluateSpecVerification(
     (g) => g.id !== 'delivery' && g.required && (g.allowedValues?.length ?? 0) > 0
   );
 
-  // 1. Vehicle trim, powertrain, and drivetrain verification
+  // 1. Vehicle specs verification (unified compatibility + trim/powertrain/drivetrain/commercial specs)
   if (rawPool.category === 'Vehicles') {
+    const reqVeh = inferVehicleSignalsFromText(queryStructured.fullItemText, queryVehicleSpecs);
+    const poolVeh = inferVehicleSignalsFromText(poolStructured.fullItemText, rawPool.vehicleSpecs);
+    const vehCompat = evaluateVehicleCompatibility(reqVeh, poolVeh, { mode: 'pool_comparison' });
+
+    for (const reason of vehCompat.verifiedMatches) {
+      if (!verifiedReasons.includes(reason)) verifiedReasons.push(reason);
+    }
+
+    for (const note of vehCompat.unverifiedFields) {
+      // Soft reminders (condition/year omitted in free-text search) appear in unspecifiedChecks;
+      // core spec omissions (vehicleType, axle, cab, trailer, bus seating/ADA, capacities, mileage, or explicit queryVehicleSpecs gaps)
+      // downgrade specFit to 'unverified' so missing specs never look like an assumed exact fit.
+      const isSoftTextReminder =
+        !queryVehicleSpecs &&
+        (/Condition is /i.test(note) || /Model year /i.test(note));
+      if (!unverifiedNotes.includes(note)) {
+        unverifiedNotes.push(note);
+      }
+      if (!isSoftTextReminder) {
+        specFit = 'unverified';
+      }
+    }
+
     const families: { name: string; set: ReadonlySet<string> }[] = [
       { name: 'trim', set: VEHICLE_TRIM_FAMILY },
       { name: 'powertrain', set: VEHICLE_POWERTRAIN_FAMILY },
@@ -597,7 +690,8 @@ export function findSimilarPoolsInSession(
         queryStructured.variantTexts,
         rawPool,
         poolStructured,
-        poolTermSet
+        poolTermSet,
+        input.vehicleSpecs
       ) !== null
     ) {
       continue;
@@ -632,7 +726,8 @@ export function findSimilarPoolsInSession(
       poolStructured,
       poolTermSet,
       matchedTitleTerms,
-      poolTitleTerms
+      poolTitleTerms,
+      input.vehicleSpecs
     );
 
     const unspecifiedChecks: string[] = [];
@@ -836,7 +931,8 @@ export function findReferenceOnlyPoolsInSession(
       queryStructured.variantTexts,
       rawPool,
       poolStructured,
-      poolTermSet
+      poolTermSet,
+      input.vehicleSpecs
     );
     if (!incompatibilityReason) continue;
 
@@ -884,6 +980,7 @@ export function buildQueryFromPool(pool: Pool): SimilarPoolQueryInput {
     goalDate: pool.goalDate,
     primaryOptionValues: primaryAllowed,
     categorySpecs: pool.categorySpecs,
+    vehicleSpecs: pool.vehicleSpecs,
     excludePoolId: pool.id,
     includeUnavailable: true,
   };

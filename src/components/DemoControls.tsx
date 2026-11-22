@@ -1,14 +1,17 @@
 import { useState } from 'react';
 import {
+  Award,
   Clock,
   Copy,
   FileEdit,
+  Megaphone,
   PlusCircle,
   RotateCcw,
   UserCheck,
   X,
 } from 'lucide-react';
 import type { DemoScenarioId, PersonaRole } from '../domain/types.ts';
+import { getPoolPlacementInfo } from '../domain/vehicleEngine.ts';
 import { ApiRequestError, useTally } from '../lib/api.ts';
 import { formatDateTimePacific } from '../lib/format.ts';
 import { useRouter } from '../lib/router.tsx';
@@ -45,6 +48,7 @@ export function DemoControls({ open, onClose }: DemoControlsProps) {
     simulateConfirmAction,
     advanceClockAction,
     simulateRevisionAction,
+    setDemoPoolPlacementAction,
     showBanner,
   } = useTally();
   const { pathname, navigate } = useRouter();
@@ -247,6 +251,65 @@ export function DemoControls({ open, onClose }: DemoControlsProps) {
             </p>
           )}
         </div>
+
+        {/* Demo-Only Server Placement Flag Toggles */}
+        {targetPool && (() => {
+          const placement = getPoolPlacementInfo(targetPool);
+          return (
+            <div className="pt-3 border-t border-[#C6D8CE] space-y-2">
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#516B61]">
+                Demo-only placement flags (fictional)
+              </p>
+              <p className="text-[11px] text-[#516B61] leading-snug">
+                Target: <strong className="text-[#152B23]">{targetPool.title}</strong>. Controlled
+                server-side only — public pool creation strips these fields and titles never grant
+                badges.
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={placement.isTallyCertified}
+                  onClick={() =>
+                    handleSimAction(() =>
+                      setDemoPoolPlacementAction(targetPool.id, {
+                        tallyCertified: !placement.isTallyCertified,
+                      })
+                    )
+                  }
+                  className={`flex items-center justify-center gap-1.5 px-2 py-2 border font-mono text-[10px] font-semibold uppercase cursor-pointer transition-colors ${
+                    placement.isTallyCertified
+                      ? 'bg-[#1E4334] text-[#FFBF32] border-[#1E4334]'
+                      : 'bg-white text-[#152B23] border-[#C6D8CE] hover:border-[#1E4334]'
+                  }`}
+                >
+                  <Award className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>{placement.isTallyCertified ? 'Certified: ON' : 'Certified: OFF'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={placement.isPaidFeatured}
+                  onClick={() =>
+                    handleSimAction(() =>
+                      setDemoPoolPlacementAction(targetPool.id, {
+                        paidFeatured: !placement.isPaidFeatured,
+                      })
+                    )
+                  }
+                  className={`flex items-center justify-center gap-1.5 px-2 py-2 border font-mono text-[10px] font-semibold uppercase cursor-pointer transition-colors ${
+                    placement.isPaidFeatured
+                      ? 'bg-[#FFF4D6] text-[#7A4B00] border-[#D4971F]'
+                      : 'bg-white text-[#152B23] border-[#C6D8CE] hover:border-[#D4971F]'
+                  }`}
+                >
+                  <Megaphone className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>{placement.isPaidFeatured ? 'Featured: ON' : 'Featured: OFF'}</span>
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Session Isolation & Reset */}
         <div className="pt-3 border-t border-[#C6D8CE] space-y-2">

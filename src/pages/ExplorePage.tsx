@@ -16,11 +16,23 @@ import {
 import { buildQueryFromPool, findCompetingPoolCounts } from '../domain/competingPoolsEngine.ts';
 import { searchPoolsForExplore } from '../domain/searchMatcher.ts';
 import {
+  formatMeasuredValue,
+  formatTrailerInclusion,
+  formatYearRequirement,
+  getPoolPlacementInfo,
+  getVehicleTypeLabel,
+  isAccessoryPool,
+  rankDiscoveryPools,
+  VEHICLE_TYPE_LIST,
+} from '../domain/vehicleEngine.ts';
+import {
   POOL_CATEGORIES,
   type PoolCategory,
   type SimilarPoolCandidate,
   type SimilarPoolQueryInput,
   type SimilarPoolReference,
+  type VehicleCondition,
+  type VehicleSubType,
 } from '../domain/types.ts';
 import { ApiRequestError, type ClientPool, useTally } from '../lib/api.ts';
 import {
@@ -36,6 +48,7 @@ import {
   type ComparisonQuerySummary,
 } from '../components/CompetingPoolsComparison.tsx';
 import { LOCATION_OPTIONS } from '../components/Layout.tsx';
+import { PlacementBadges } from '../components/PlacementBadges.tsx';
 import { PoolImage } from '../components/PoolImage.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
 
@@ -99,6 +112,28 @@ function matchesWindowFilter(
 }
 
 function extractVariantSummary(pool: ClientPool): string | null {
+  if (pool.category === 'Vehicles' && pool.vehicleSpecs) {
+    if (pool.vehicleSpecs.assetClass === 'accessory') {
+      return 'Vehicle accessory / charging equipment (not a motor vehicle)';
+    }
+    const vs = pool.vehicleSpecs;
+    const parts: string[] = [];
+    if (vs.vehicleType) parts.push(getVehicleTypeLabel(vs.vehicleType, true));
+    if (vs.condition) parts.push(vs.condition === 'new' ? 'New' : 'Used');
+    const yr = formatYearRequirement(vs);
+    if (yr) parts.push(yr);
+    if (vs.axleConfiguration) parts.push(vs.axleConfiguration);
+    else if (vs.drivetrain) parts.push(vs.drivetrain);
+    if (vs.powertrain) parts.push(vs.powertrain);
+    if (vs.seatingCapacity !== undefined) parts.push(`${vs.seatingCapacity}-seat`);
+    const gvwr = formatMeasuredValue(vs.gvwr);
+    if (gvwr && vs.vehicleType !== 'passenger' && vs.vehicleType !== 'pickup') {
+      parts.push(`GVWR ${gvwr}`);
+    }
+    const trailer = formatTrailerInclusion(vs.trailerInclusion, vs.vehicleType);
+    if (trailer) parts.push(trailer);
+    if (parts.length > 0) return parts.slice(0, 5).join(' · ');
+  }
   const parts: string[] = [];
   for (const g of pool.optionGroups) {
     if (g.id === 'delivery') continue;
@@ -205,6 +240,9 @@ export function ExplorePage() {
   const location = searchParams.get('loc') ?? 'All locations';
   const stageFilter = (searchParams.get('stage') as StageFilter | null) ?? 'all';
   const windowFilter = (searchParams.get('win') as WindowFilter | null) ?? 'all';
+  const vehicleType =
+    (searchParams.get('vtype') as VehicleSubType | 'all' | 'accessories' | null) ?? 'all';
+  const vehicleCondition = (searchParams.get('vcond') as VehicleCondition | 'all' | null) ?? 'all';
 
   // Competing pools comparison drawer/panel state
   const [compareOpen, setCompareOpen] = useState(false);
@@ -231,6 +269,10 @@ export function ExplorePage() {
 
   const updateParams = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
+    if ('cat' in patch && patch.cat !== 'Vehicles') {
+      next.delete('vtype');
+      next.delete('vcond');
+    }
     for (const [k, v] of Object.entries(patch)) {
       if (!v || v === 'All' || v === 'All locations' || v === 'all') {
         next.delete(k);
@@ -272,13 +314,18 @@ export function ExplorePage() {
         variant: trimmedVariant,
         category,
         location,
+        vehicleType: category === 'Vehicles' ? vehicleType : 'all',
+        vehicleCondition: category === 'Vehicles' ? vehicleCondition : 'all',
       }),
-    [stageAndWindowPools, trimmedQuery, trimmedVariant, category, location]
-  );
-
-  const filteredPools = useMemo(
-    () => exploreSearch.results.map((r) => r.pool),
-    [exploreSearch]
+    [
+      stageAndWindowPools,
+      trimmedQuery,
+      trimmedVariant,
+      category,
+      location,
+      vehicleType,
+      vehicleCondition,
+    ]
   );
 
   const exploreMatchByPoolId = useMemo(() => {
@@ -292,24 +339,37 @@ export function ExplorePage() {
     return map;
   }, [exploreSearch]);
 
+  // Apply authoritative placement ranking AFTER user filters & search compatibility:
+  // Paid Featured > Tally Certified > Organic (exact text stays above approximate; unavailable never boosted)
+  const rankedDiscovery = useMemo(() => {
+    const matchKindByPoolId = new Map<string, 'all' | 'exact' | 'approximate'>();
+    for (const r of exploreSearch.results) {
+      matchKindByPoolId.set(r.pool.id, r.matchKind);
+    }
+    return rankDiscoveryPools(
+      exploreSearch.results.map((r) => r.pool),
+      { matchKindByPoolId }
+    );
+  }, [exploreSearch]);
+
+  const filteredPools = rankedDiscovery.orderedPools;
+
   const hasActiveFilter =
     trimmedQuery !== '' ||
     trimmedVariant !== '' ||
     category !== 'All' ||
     location !== 'All locations' ||
     stageFilter !== 'all' ||
-    windowFilter !== 'all';
+    windowFilter !== 'all' ||
+    (category === 'Vehicles' && (vehicleType !== 'all' || vehicleCondition !== 'all'));
 
   const hasTypedSearch = trimmedQuery !== '' || trimmedVariant !== '';
 
-  // Keep Featured hero when browsing directory; during typed search render results in strict ranked order
-  // so exact matches ALWAYS appear above approximate candidates (never promoting an approximate hit into Featured).
+  // On unfiltered All directory view, spotlight the #1 ranked listing (preserving Paid > Certified > Organic).
+  // When filtering, viewing Vehicles sub-filters, or running typed search, show strict ordered grid without pull-out.
   const featuredPool = useMemo(() => {
-    if (hasTypedSearch) return undefined;
-    return (
-      filteredPools.find((p) => p.id === 'pool-maverick-xlt') ??
-      (!hasActiveFilter ? filteredPools[0] : undefined)
-    );
+    if (hasTypedSearch || hasActiveFilter) return undefined;
+    return filteredPools[0];
   }, [filteredPools, hasActiveFilter, hasTypedSearch]);
 
   const secondaryPools = useMemo(
@@ -319,6 +379,20 @@ export function ExplorePage() {
 
   const featuredMeter = featuredPool ? getMeterState(featuredPool) : null;
   const featuredFollowing = featuredPool ? featuredPool.followers.includes(actorId) : false;
+  const featuredPlacementInfo = featuredPool ? getPoolPlacementInfo(featuredPool) : null;
+
+  const activeVehicleTypeLabel =
+    category === 'Vehicles' && vehicleType !== 'all'
+      ? vehicleType === 'accessories'
+        ? 'Accessories & chargers'
+        : getVehicleTypeLabel(vehicleType, true)
+      : undefined;
+  const activeVehicleCondLabel =
+    category === 'Vehicles' && vehicleCondition !== 'all'
+      ? vehicleCondition === 'new'
+        ? 'New'
+        : 'Used'
+      : undefined;
 
   // Pre-fills item query and selected category only; city stays an explicit optional field on Alerts
   const alertQueryValue = [trimmedQuery, trimmedVariant].filter(Boolean).join(' ').trim();
@@ -641,6 +715,107 @@ export function ExplorePage() {
             })}
           </div>
 
+          {/* Vehicles Sub-Type & Condition Filter Strip (shown ONLY when Vehicles is active) */}
+          {category === 'Vehicles' && (
+            <div
+              className="p-3.5 bg-[#F6F1E5] border border-[#CDD6CC] space-y-2.5"
+              data-testid="vehicle-explore-filters"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#152B23]">
+                  Vehicle type &amp; condition
+                </span>
+                <div
+                  className="inline-flex items-center gap-1"
+                  role="group"
+                  aria-label="Filter by vehicle condition"
+                >
+                  {(
+                    [
+                      { id: 'all', label: 'Any condition' },
+                      { id: 'new', label: 'New' },
+                      { id: 'used', label: 'Used' },
+                    ] as const
+                  ).map((c) => {
+                    const active = vehicleCondition === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => updateParams({ vcond: c.id })}
+                        aria-pressed={active}
+                        className={`px-2.5 py-1 border font-mono text-[10px] uppercase tracking-wider cursor-pointer transition-colors ${
+                          active
+                            ? 'bg-[#1E4334] text-white border-[#1E4334] font-semibold'
+                            : 'bg-white text-[#152B23] border-[#CDD6CC] hover:border-[#1E4334]'
+                        }`}
+                      >
+                        {c.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div
+                className="flex flex-wrap items-center gap-1.5"
+                role="group"
+                aria-label="Filter by vehicle type"
+              >
+                <button
+                  type="button"
+                  onClick={() => updateParams({ vtype: 'all' })}
+                  aria-pressed={vehicleType === 'all'}
+                  className={`px-2.5 py-1 border font-mono text-[10px] uppercase tracking-wider cursor-pointer transition-colors ${
+                    vehicleType === 'all'
+                      ? 'bg-[#1E4334] text-white border-[#1E4334] font-semibold'
+                      : 'bg-white text-[#152B23] border-[#CDD6CC] hover:border-[#1E4334]'
+                  }`}
+                >
+                  All vehicles
+                </button>
+                {VEHICLE_TYPE_LIST.map((vt) => {
+                  const active = vehicleType === vt.id;
+                  return (
+                    <button
+                      key={vt.id}
+                      type="button"
+                      onClick={() => updateParams({ vtype: vt.id })}
+                      aria-pressed={active}
+                      className={`px-2.5 py-1 border font-mono text-[10px] uppercase tracking-wider cursor-pointer transition-colors ${
+                        active
+                          ? 'bg-[#1E4334] text-white border-[#1E4334] font-semibold'
+                          : 'bg-white text-[#152B23] border-[#CDD6CC] hover:border-[#1E4334]'
+                      }`}
+                    >
+                      {vt.shortLabel}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => updateParams({ vtype: 'accessories' })}
+                  aria-pressed={vehicleType === 'accessories'}
+                  className={`px-2.5 py-1 border font-mono text-[10px] uppercase tracking-wider cursor-pointer transition-colors ${
+                    vehicleType === 'accessories'
+                      ? 'bg-[#1E4334] text-white border-[#1E4334] font-semibold'
+                      : 'bg-white text-[#4E6359] border-[#CDD6CC] hover:border-[#1E4334]'
+                  }`}
+                >
+                  Accessories &amp; chargers
+                </button>
+              </div>
+
+              <p className="text-[11px] text-[#4E6359]">
+                {rankedDiscovery.paidFeaturedCount > 0 || rankedDiscovery.tallyCertifiedCount > 0
+                  ? 'Matching order: Sponsored · Featured, then Tally Certified bulk deals, then organic buyer pools. Incompatible or ended listings are never promoted.'
+                  : filteredPools.length > 0
+                    ? 'Showing matching organic pools — no Sponsored or Tally Certified deals match these vehicle filters.'
+                    : 'Accessories are separated from motor vehicle types so EV chargers never appear inside passenger, truck, bus, or semi-tractor filters.'}
+              </p>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-[#CDD6CC]/80">
             <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by stage">
               {STAGE_FILTERS.map((sf) => {
@@ -730,6 +905,26 @@ export function ExplorePage() {
                   className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-[#8C9A86] text-[#152B23] hover:border-[#A63A2B] cursor-pointer"
                 >
                   <span>Window: {activeWindowLabel}</span>
+                  <X className="w-3 h-3 text-[#4E6359]" aria-hidden="true" />
+                </button>
+              )}
+              {activeVehicleTypeLabel && (
+                <button
+                  type="button"
+                  onClick={() => updateParams({ vtype: null })}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-[#8C9A86] text-[#152B23] hover:border-[#A63A2B] cursor-pointer"
+                >
+                  <span>Type: {activeVehicleTypeLabel}</span>
+                  <X className="w-3 h-3 text-[#4E6359]" aria-hidden="true" />
+                </button>
+              )}
+              {activeVehicleCondLabel && (
+                <button
+                  type="button"
+                  onClick={() => updateParams({ vcond: null })}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-[#8C9A86] text-[#152B23] hover:border-[#A63A2B] cursor-pointer"
+                >
+                  <span>Condition: {activeVehicleCondLabel}</span>
                   <X className="w-3 h-3 text-[#4E6359]" aria-hidden="true" />
                 </button>
               )}
@@ -948,10 +1143,11 @@ export function ExplorePage() {
         </section>
       ) : (
         <>
-          {/* Featured Pool Asymmetric Split Card */}
+          {/* Top Ranked Spotlight Split Card (unfiltered All view; strictly #1 ranked listing) */}
           {featuredPool && featuredMeter && (
             <article
-              aria-label={`Featured pool: ${featuredPool.title}`}
+              aria-label={`Top listing: ${featuredPool.title}`}
+              data-pool-id={featuredPool.id}
               className="bg-white border border-[#CDD6CC] grid grid-cols-1 lg:grid-cols-12 items-stretch"
             >
               <div className="lg:col-span-6 relative min-h-[240px] sm:min-h-[300px] lg:min-h-[340px] bg-[#1E4334]">
@@ -962,13 +1158,17 @@ export function ExplorePage() {
                   title={featuredPool.title}
                   className="lg:h-full"
                 />
-                <span className="absolute top-3 left-3 px-2.5 py-1 bg-[#FFBF32] border border-[#152B23] font-mono text-[10px] font-semibold uppercase tracking-wider text-[#152B23]">
-                  Featured pool
-                </span>
+                {!featuredPlacementInfo?.isPaidFeatured && !featuredPlacementInfo?.isTallyCertified && (
+                  <span className="absolute top-3 left-3 px-2.5 py-1 bg-[#F6F1E5] border border-[#152B23] font-mono text-[10px] font-semibold uppercase tracking-wider text-[#152B23]">
+                    Spotlight pool
+                  </span>
+                )}
               </div>
 
               <div className="lg:col-span-6 p-5 sm:p-7 flex flex-col justify-between gap-5">
                 <div className="space-y-3">
+                  <PlacementBadges pool={featuredPool} variant="card" />
+
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-mono text-[11px] uppercase tracking-wider text-[#4E6359]">
                       {featuredPool.category} · {featuredPool.location} ·{' '}
@@ -1009,7 +1209,8 @@ export function ExplorePage() {
                         </span>
                       </span>
                       <span className="font-mono text-sm font-bold text-[#152B23] tabular-nums">
-                        {formatCurrency(featuredPool.currentOffer.subtotal)} subtotal
+                        {formatCurrency(featuredPool.currentOffer.subtotal)}
+                        {featuredPool.currentOffer.knownFeesUnknown ? ' + TBD fees' : ' subtotal'}
                       </span>
                     </div>
                   ) : (
@@ -1128,18 +1329,26 @@ export function ExplorePage() {
                   const variantSummary = extractVariantSummary(pool);
                   const matchMeta = exploreMatchByPoolId.get(pool.id);
                   const isApproxCard = matchMeta?.matchKind === 'approximate';
+                  const placementInfo = getPoolPlacementInfo(pool);
+                  const isVehAccessory = pool.category === 'Vehicles' && isAccessoryPool(pool);
 
                   return (
                     <article
                       key={pool.id}
+                      data-pool-id={pool.id}
+                      data-placement-tier={placementInfo.tier}
                       className={`border flex flex-col justify-between transition-transform hover:-translate-y-0.5 ${
-                        isUnlocked
-                          ? 'bg-white border-[#1E4334] shadow-[3px_3px_0px_#152B23]'
-                          : isApproxCard
-                            ? 'bg-white border-[#D49B00]'
-                            : isUnavailable
-                              ? 'bg-[#FBF9F4] border-[#CDD6CC]'
-                              : 'bg-white border-[#CDD6CC]'
+                        placementInfo.isPaidFeatured
+                          ? 'bg-white border-[#D4971F] shadow-[3px_3px_0px_#D4971F]'
+                          : placementInfo.isTallyCertified
+                            ? 'bg-white border-[#1E4334] shadow-[3px_3px_0px_#1E4334]'
+                            : isUnlocked
+                              ? 'bg-white border-[#1E4334] shadow-[3px_3px_0px_#152B23]'
+                              : isApproxCard
+                                ? 'bg-white border-[#D49B00]'
+                                : isUnavailable
+                                  ? 'bg-[#FBF9F4] border-[#CDD6CC]'
+                                  : 'bg-white border-[#CDD6CC]'
                       }`}
                     >
                       {pool.imageUrl && (
@@ -1160,6 +1369,8 @@ export function ExplorePage() {
 
                       <div className="p-4 sm:p-5 flex-1 flex flex-col justify-between gap-4">
                         <div className="space-y-2">
+                          <PlacementBadges pool={pool} variant="card" />
+
                           {isApproxCard && (
                             <div className="px-2.5 py-1.5 bg-[#FFFDF5] border border-[#D49B00] space-y-0.5">
                               <p className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#A63A2B]">
@@ -1176,6 +1387,11 @@ export function ExplorePage() {
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#4E6359]">
                               {pool.category}
+                              {isVehAccessory
+                                ? ' · Accessory'
+                                : pool.category === 'Vehicles' && pool.vehicleSpecs?.vehicleType
+                                  ? ` · ${getVehicleTypeLabel(pool.vehicleSpecs.vehicleType, true)}`
+                                  : ''}
                             </span>
                             <span
                               className={`px-2 py-0.5 border font-mono text-[10px] font-semibold uppercase tracking-wider ${getStageToneClasses(
@@ -1213,6 +1429,7 @@ export function ExplorePage() {
                               </span>
                               <span className="font-mono font-semibold tabular-nums shrink-0">
                                 {formatCurrency(pool.currentOffer.subtotal)}
+                                {pool.currentOffer.knownFeesUnknown ? ' + TBD' : ''}
                               </span>
                             </div>
                           ) : st === 'closed' && pool.outcomeSummary ? (

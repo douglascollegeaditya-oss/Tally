@@ -1,4 +1,13 @@
-import { POOL_CATEGORIES, type PoolCategory } from './types.ts';
+import {
+  POOL_CATEGORIES,
+  type DistanceUnit,
+  type PoolCategory,
+  type TrailerInclusion,
+  type VehicleAssetClass,
+  type VehicleCondition,
+  type VehicleSubType,
+  type WeightUnit,
+} from './types.ts';
 
 export interface StartPoolDraftState {
   category: PoolCategory | '';
@@ -11,9 +20,43 @@ export interface StartPoolDraftState {
   goalDate: string;
   organizerNote: string;
   requirementsText: string;
-  // Category-specific typed fields
+  // Category-specific typed fields (legacy vehModel/vehTrim preserved for backward compatibility)
   vehModel: string;
   vehTrim: string;
+  // Structured vehicle fields
+  vehAssetClass: VehicleAssetClass;
+  vehType: VehicleSubType | '';
+  vehCondition: VehicleCondition | '';
+  vehMake: string;
+  vehModelName: string;
+  vehYearMode: 'single' | 'range';
+  vehYear: string;
+  vehYearMin: string;
+  vehYearMax: string;
+  vehPowertrain: string;
+  vehTransmission: string;
+  vehDrivetrain: string;
+  vehBodyConfig: string;
+  vehAxleConfig: string;
+  vehGvwrValue: string;
+  vehGvwrUnit: WeightUnit;
+  vehGcwrValue: string;
+  vehGcwrUnit: WeightUnit;
+  vehPayloadValue: string;
+  vehPayloadUnit: WeightUnit;
+  vehTowingValue: string;
+  vehTowingUnit: WeightUnit;
+  vehCabOrSleeper: string;
+  vehTrailerInclusion: TrailerInclusion | '';
+  vehBusType: string;
+  vehSeatingCapacity: string;
+  vehAccessibility: string;
+  vehMaxMileageValue: string;
+  vehMaxMileageUnit: DistanceUnit;
+  vehUsedConditionNote: string;
+  vehDeliveryFleetNotes: string;
+  vehRequiredFields: string[];
+  // Other category fields
   aptMoveIn: string;
   aptUnitSize: string;
   furnSku: string;
@@ -59,6 +102,38 @@ export const INITIAL_START_POOL_DRAFT: StartPoolDraftState = {
   requirementsText: '',
   vehModel: '',
   vehTrim: '',
+  vehAssetClass: 'vehicle',
+  vehType: '',
+  vehCondition: '',
+  vehMake: '',
+  vehModelName: '',
+  vehYearMode: 'single',
+  vehYear: '',
+  vehYearMin: '',
+  vehYearMax: '',
+  vehPowertrain: '',
+  vehTransmission: '',
+  vehDrivetrain: '',
+  vehBodyConfig: '',
+  vehAxleConfig: '',
+  vehGvwrValue: '',
+  vehGvwrUnit: 'lbs',
+  vehGcwrValue: '',
+  vehGcwrUnit: 'lbs',
+  vehPayloadValue: '',
+  vehPayloadUnit: 'lbs',
+  vehTowingValue: '',
+  vehTowingUnit: 'lbs',
+  vehCabOrSleeper: '',
+  vehTrailerInclusion: '',
+  vehBusType: '',
+  vehSeatingCapacity: '',
+  vehAccessibility: '',
+  vehMaxMileageValue: '',
+  vehMaxMileageUnit: 'mi',
+  vehUsedConditionNote: '',
+  vehDeliveryFleetNotes: '',
+  vehRequiredFields: ['vehicleType', 'make', 'model', 'year'],
   aptMoveIn: '2027-02-01',
   aptUnitSize: '',
   furnSku: '',
@@ -92,7 +167,10 @@ export function hasSubstantiveSavedDraft(
       Boolean(saved.title?.trim()) ||
       Boolean(parseValidPoolCategory(saved.category)) ||
       Boolean(saved.requirementsText?.trim()) ||
-      Boolean(saved.organizerNote?.trim())
+      Boolean(saved.organizerNote?.trim()) ||
+      Boolean(saved.vehMake?.trim()) ||
+      Boolean(saved.vehModelName?.trim()) ||
+      Boolean(saved.vehType)
     );
   }
   // Legacy saved drafts (before userEdited flag) are only treated as substantive

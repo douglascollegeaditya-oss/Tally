@@ -1,5 +1,18 @@
 import { normalizeMatchTokens } from './alertsEngine.ts';
-import type { Pool, PoolCategory, PoolSpecField } from './types.ts';
+import type {
+  Pool,
+  PoolCategory,
+  PoolSpecField,
+  VehicleCondition,
+  VehicleSubType,
+} from './types.ts';
+import {
+  evaluateVehicleCompatibility,
+  formatYearRequirement,
+  getVehicleTypeLabel,
+  inferVehicleSignalsFromText,
+  isAccessoryPool,
+} from './vehicleEngine.ts';
 
 const MAX_QUERY_CHARS = 200;
 const MAX_QUERY_TOKENS = 16;
@@ -1137,6 +1150,35 @@ function collectPoolStructuredTextsForExplore(pool: Pool): {
     }
   }
 
+  if (pool.category === 'Vehicles' && pool.vehicleSpecs) {
+    const vs = pool.vehicleSpecs;
+    const structuredVals = [
+      vs.assetClass === 'accessory'
+        ? 'accessory'
+        : vs.vehicleType
+          ? getVehicleTypeLabel(vs.vehicleType, true)
+          : undefined,
+      vs.condition,
+      vs.make,
+      vs.model,
+      formatYearRequirement(vs),
+      vs.trim,
+      vs.powertrain,
+      vs.drivetrain,
+      vs.transmission,
+      vs.bodyConfiguration,
+      vs.axleConfiguration,
+      vs.cabOrSleeper,
+      vs.busType,
+      vs.accessibilityRequirement,
+    ];
+    for (const val of structuredVals) {
+      if (typeof val === 'string' && val.trim()) {
+        itemSpecTexts.push(val.trim());
+      }
+    }
+  }
+
   return { allowedOptionTexts, excludedOptionTexts, itemSpecTexts };
 }
 
@@ -1169,8 +1211,17 @@ function hasExploreIncompatibility(
     }
   }
 
-  // 2. Vehicle trim / powertrain / drivetrain conflict
+  // 2. Unified vehicle compatibility + trim / powertrain / drivetrain conflict
   if (pool.category === 'Vehicles') {
+    const queryVehSignals = inferVehicleSignalsFromText(combinedQueryText);
+    const poolVehSignals = inferVehicleSignalsFromText(poolFullText, pool.vehicleSpecs);
+    const vehCompat = evaluateVehicleCompatibility(queryVehSignals, poolVehSignals, {
+      mode: 'pool_comparison',
+    });
+    if (!vehCompat.compatible) {
+      return true;
+    }
+
     for (const family of [VEHICLE_TRIM_FAMILY, VEHICLE_POWERTRAIN_FAMILY, VEHICLE_DRIVETRAIN_FAMILY]) {
       const qVals = Array.from(queryTermSet).filter((t) => family.has(t));
       const pVals = Array.from(poolTermSet).filter((t) => family.has(t));
@@ -1222,18 +1273,33 @@ export function searchPoolsForExplore<TPool extends Pool>(
     variant?: string;
     category?: PoolCategory | 'All';
     location?: string;
+    vehicleType?: VehicleSubType | 'all' | 'accessories';
+    vehicleCondition?: VehicleCondition | 'all';
   }
 ): ExploreSearchResult<TPool> {
   const trimmedQuery = (filters.query ?? '').trim();
   const trimmedVariant = (filters.variant ?? '').trim();
 
-  // Apply explicit category & location dropdown filters first
+  // Apply explicit category, vehicle subtype/condition, and location dropdown filters first
   const basePools = pools.filter((pool) => {
     if (filters.category && filters.category !== 'All' && pool.category !== filters.category) {
       return false;
     }
     if (filters.location && filters.location !== 'All locations' && pool.location !== filters.location) {
       return false;
+    }
+    if (filters.vehicleType && filters.vehicleType !== 'all') {
+      if (pool.category !== 'Vehicles') return false;
+      if (filters.vehicleType === 'accessories') {
+        if (!isAccessoryPool(pool)) return false;
+      } else {
+        if (isAccessoryPool(pool)) return false;
+        if (pool.vehicleSpecs?.vehicleType !== filters.vehicleType) return false;
+      }
+    }
+    if (filters.vehicleCondition && filters.vehicleCondition !== 'all') {
+      if (pool.category !== 'Vehicles' || isAccessoryPool(pool)) return false;
+      if (pool.vehicleSpecs?.condition !== filters.vehicleCondition) return false;
     }
     return true;
   });

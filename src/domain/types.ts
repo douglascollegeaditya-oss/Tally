@@ -44,6 +44,103 @@ export interface PersonaIdentity {
   simulated?: boolean;
 }
 
+export type VehicleAssetClass = 'vehicle' | 'accessory';
+
+export type VehicleSubType =
+  | 'passenger'
+  | 'pickup'
+  | 'commercial_van_truck'
+  | 'bus'
+  | 'semi_tractor';
+
+export const VEHICLE_SUBTYPES: readonly VehicleSubType[] = [
+  'passenger',
+  'pickup',
+  'commercial_van_truck',
+  'bus',
+  'semi_tractor',
+];
+
+export type VehicleCondition = 'new' | 'used';
+export type WeightUnit = 'lbs' | 'kg';
+export type DistanceUnit = 'mi' | 'km';
+export type TrailerInclusion = 'tractor_only' | 'includes_trailer';
+
+export interface MeasuredValue<U extends string = string> {
+  value: number;
+  unit: U;
+}
+
+export interface VehicleSpecProfile {
+  assetClass?: VehicleAssetClass;
+  vehicleType?: VehicleSubType;
+  condition?: VehicleCondition;
+  make?: string;
+  model?: string;
+  year?: number;
+  yearMin?: number;
+  yearMax?: number;
+  trim?: string;
+  powertrain?: string;
+  transmission?: string;
+  drivetrain?: string;
+  // Commercial truck / van / semi-tractor specifications
+  bodyConfiguration?: string;
+  axleConfiguration?: string;
+  gvwr?: MeasuredValue<WeightUnit>;
+  gcwr?: MeasuredValue<WeightUnit>;
+  payloadCapacity?: MeasuredValue<WeightUnit>;
+  towingCapacity?: MeasuredValue<WeightUnit>;
+  cabOrSleeper?: string;
+  trailerInclusion?: TrailerInclusion;
+  // Bus specifications
+  busType?: string;
+  seatingCapacity?: number;
+  accessibilityRequirement?: string;
+  // Used vehicle specifications
+  mileage?: MeasuredValue<DistanceUnit>;
+  maxMileage?: MeasuredValue<DistanceUnit>;
+  usedConditionNote?: string;
+  // Delivery / fleet / upfit notes
+  deliveryOrFleetNotes?: string;
+  // Field keys explicitly marked by the organizer as required group constraints (vs preferences)
+  requiredFields?: string[];
+}
+
+export interface TallyCertificationMeta {
+  certified: true;
+  label: 'Tally Certified bulk deal';
+  partnerDealerLabel?: string;
+  summary: string;
+  disclaimer: string;
+  managedBy: 'tally_seed' | 'tally_demo_admin';
+  isDemoExample?: boolean;
+}
+
+export interface PaidPlacementMeta {
+  paidFeatured: true;
+  label: 'Sponsored · Featured';
+  sponsorName?: string;
+  managedBy: 'tally_seed' | 'tally_demo_admin';
+  isDemoExample?: boolean;
+}
+
+export interface QuoteFeeItem {
+  label: string;
+  amount: number | null;
+  status: 'fixed' | 'unknown';
+}
+
+export type VehicleCompatibilityStatus = 'exact_fit' | 'possible_verify' | 'conflict';
+
+export interface VehicleCompatibilityReport {
+  compatible: boolean;
+  status: VehicleCompatibilityStatus;
+  conflicts: string[];
+  verifiedMatches: string[];
+  unverifiedFields: string[];
+}
+
 export interface PoolOptionGroup {
   id: string;
   label: string;
@@ -86,8 +183,15 @@ export interface SellerOffer {
   unitPrice: number;
   knownFees: number;
   feeLabel: string;
+  knownFeesUnknown?: boolean;
+  itemizedFees?: QuoteFeeItem[];
   subtotal: number;
   taxAndRegistrationNote: string;
+  taxTreatment?: string;
+  paymentTerms?: string;
+  includedItems?: string[];
+  excludedItems?: string[];
+  quotedVehicle?: VehicleSpecProfile;
   minQuantity: number;
   maxQuantity: number;
   fulfillmentMethod: string;
@@ -106,6 +210,7 @@ export interface OfferVersionSnapshot {
   unitPrice: number;
   knownFees: number;
   feeLabel: string;
+  knownFeesUnknown?: boolean;
   subtotal: number;
   minQuantity: number;
   maxQuantity: number;
@@ -215,6 +320,10 @@ export interface Pool {
   sharedRequirements: string[];
   categorySpecs: PoolSpecField[];
   optionGroups: PoolOptionGroup[];
+  vehicleSpecs?: VehicleSpecProfile;
+  // Server-managed trust & placement metadata (never self-assertable on public pool creation)
+  tallyCertification?: TallyCertificationMeta;
+  paidPlacement?: PaidPlacementMeta;
   sellerToken?: string;
   quoteRequestedAt?: string;
   currentOffer?: SellerOffer;
@@ -289,6 +398,7 @@ export interface CreatePoolInput {
   categorySpecs: PoolSpecField[];
   primaryOptionLabel?: string;
   primaryOptionValues?: string[];
+  vehicleSpecs?: VehicleSpecProfile;
 }
 
 export interface PublishOfferInput {
@@ -299,7 +409,14 @@ export interface PublishOfferInput {
   unitPrice: number;
   knownFees: number;
   feeLabel: string;
+  knownFeesUnknown?: boolean;
+  itemizedFees?: QuoteFeeItem[];
   taxAndRegistrationNote: string;
+  taxTreatment?: string;
+  paymentTerms?: string;
+  includedItems?: string[];
+  excludedItems?: string[];
+  quotedVehicle?: VehicleSpecProfile;
   minQuantity: number;
   maxQuantity: number;
   fulfillmentMethod: string;
@@ -360,6 +477,7 @@ export interface SimilarPoolQueryInput {
   modelOrVariant?: string;
   primaryOptionValues?: string[];
   categorySpecs?: PoolSpecField[];
+  vehicleSpecs?: VehicleSpecProfile;
   excludePoolId?: string;
   includeUnavailable?: boolean;
 }
@@ -372,6 +490,7 @@ export interface SimilarPoolQuoteSummary {
   sellerLocation?: string;
   unitPrice?: number;
   knownFees?: number;
+  knownFeesUnknown?: boolean;
   feeLabel?: string;
   subtotal?: number;
   minQuantity?: number;
@@ -382,6 +501,8 @@ export interface SimilarPoolQuoteSummary {
   closeAt?: string;
   timezoneLabel?: string;
   claimByDate?: string;
+  hasSpecConflicts?: boolean;
+  specConflicts?: string[];
 }
 
 export interface SimilarPoolCandidate {
@@ -414,5 +535,6 @@ export interface SimilarPoolReference {
   explanation: string;
   quoteSummary: SimilarPoolQuoteSummary;
 }
+
 
 

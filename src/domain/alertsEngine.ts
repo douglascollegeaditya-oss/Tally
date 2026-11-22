@@ -11,6 +11,7 @@ import {
   type SavedItemAlert,
   type UpdateItemAlertInput,
 } from './types.ts';
+import { migrateLegacyVehiclePool } from './vehicleEngine.ts';
 
 const VALID_CATEGORIES = new Set<string>(POOL_CATEGORIES);
 const VALID_ALERT_STATUSES = new Set<string>(['active', 'paused', 'archived']);
@@ -27,8 +28,8 @@ function cloneState(state: DemoSessionState): DemoSessionState {
 }
 
 /**
- * Migrates older persisted session snapshots that may lack alerts/notifications arrays,
- * preserving all existing seed and custom pools and activity.
+ * Migrates older persisted session snapshots that may lack alerts/notifications arrays
+ * or structured vehicleSpecs, preserving all existing seed and custom pools and activity.
  */
 export function migrateSessionState(
   raw: Omit<DemoSessionState, 'alerts' | 'notifications'> &
@@ -56,8 +57,13 @@ export function migrateSessionState(
       )
     : [];
 
+  const pools: Pool[] = Array.isArray(raw.pools)
+    ? raw.pools.map((pool) => migrateLegacyVehiclePool(pool))
+    : [];
+
   return {
     ...raw,
+    pools,
     alerts,
     notifications,
   };

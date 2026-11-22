@@ -1,21 +1,43 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, History, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, History, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { canAccessSellerRoute } from '../domain/tallyEngine.ts';
-import type { SellerOffer } from '../domain/types.ts';
+import type {
+  DistanceUnit,
+  QuoteFeeItem,
+  SellerOffer,
+  TrailerInclusion,
+  VehicleCondition,
+  VehicleSpecProfile,
+  VehicleSubType,
+} from '../domain/types.ts';
+import {
+  normalizeQuoteItemizedFees,
+  VEHICLE_TYPE_LIST,
+} from '../domain/vehicleEngine.ts';
 import { ApiRequestError, type SellerPacketResponse, useTally } from '../lib/api.ts';
 import { formatCurrency, formatDeadlineCompact, formatUnit } from '../lib/format.ts';
 import { Link } from '../lib/router.tsx';
 import { QuoteReceipt } from '../components/QuoteReceipt.tsx';
 import { RoleGate } from '../components/RoleGate.tsx';
 
+interface FeeDraftRow {
+  id: string;
+  label: string;
+  status: 'fixed' | 'unknown';
+  amount: string;
+  note: string;
+}
+
 interface QuoteFormState {
   sellerName: string;
   sellerLocation: string;
   matchingScope: string;
   unitPrice: string;
-  knownFees: string;
-  feeLabel: string;
+  itemizedFees: FeeDraftRow[];
   taxAndRegistrationNote: string;
+  paymentTerms: string;
+  includedItemsText: string;
+  excludedItemsText: string;
   minQuantity: string;
   maxQuantity: string;
   fulfillmentMethod: string;
@@ -24,10 +46,28 @@ interface QuoteFormState {
   claimByDate: string;
   privateClaimInstructions: string;
   revisionSummary: string;
+  // Structured quoted vehicle specs (for Vehicles motor-vehicle pools)
+  qVehType: VehicleSubType | '';
+  qVehCondition: VehicleCondition | '';
+  qVehMake: string;
+  qVehModel: string;
+  qVehYear: string;
+  qVehTrim: string;
+  qVehPowertrain: string;
+  qVehDrivetrain: string;
+  qVehTransmission: string;
+  qVehBodyConfig: string;
+  qVehAxleConfig: string;
+  qVehCabOrSleeper: string;
+  qVehTrailerInclusion: TrailerInclusion | '';
+  qVehBusType: string;
+  qVehSeatingCapacity: string;
+  qVehAccessibility: string;
+  qVehMileageValue: string;
+  qVehMileageUnit: DistanceUnit;
 }
 
 function isoToPacificInput(iso: string): string {
-  // Default fixture Dec 14, 2026 18:00 Pacific = 2026-12-15T02:00:00Z
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '2026-12-14T18:00';
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -44,22 +84,76 @@ function isoToPacificInput(iso: string): string {
 }
 
 function pacificInputToIso(val: string): string {
-  // Standard Pacific time in Dec is UTC-08:00
   if (!val || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(val)) return '';
   return `${val}:00-08:00`;
+}
+
+function extractVehicleFormDefaults(source?: VehicleSpecProfile) {
+  return {
+    qVehType: source?.vehicleType ?? ('' as VehicleSubType | ''),
+    qVehCondition: source?.condition ?? ('' as VehicleCondition | ''),
+    qVehMake: source?.make ?? '',
+    qVehModel: source?.model ?? '',
+    qVehYear:
+      source?.year !== undefined
+        ? String(source.year)
+        : source?.yearMin !== undefined
+          ? String(source.yearMin)
+          : '',
+    qVehTrim: source?.trim ?? '',
+    qVehPowertrain: source?.powertrain ?? '',
+    qVehDrivetrain: source?.drivetrain ?? '',
+    qVehTransmission: source?.transmission ?? '',
+    qVehBodyConfig: source?.bodyConfiguration ?? '',
+    qVehAxleConfig: source?.axleConfiguration ?? '',
+    qVehCabOrSleeper: source?.cabOrSleeper ?? '',
+    qVehTrailerInclusion: source?.trailerInclusion ?? ('' as TrailerInclusion | ''),
+    qVehBusType: source?.busType ?? '',
+    qVehSeatingCapacity:
+      source?.seatingCapacity !== undefined ? String(source.seatingCapacity) : '',
+    qVehAccessibility: source?.accessibilityRequirement ?? '',
+    qVehMileageValue:
+      source?.mileage?.value !== undefined
+        ? String(source.mileage.value)
+        : source?.maxMileage?.value !== undefined
+          ? String(source.maxMileage.value)
+          : '',
+    qVehMileageUnit: source?.mileage?.unit ?? source?.maxMileage?.unit ?? ('mi' as DistanceUnit),
+  };
 }
 
 function buildInitialForm(packet: SellerPacketResponse): QuoteFormState {
   const existing = packet.currentOffer;
   if (existing) {
+    const feeRows: FeeDraftRow[] =
+      existing.itemizedFees && existing.itemizedFees.length > 0
+        ? existing.itemizedFees.map((f) => ({
+            id: f.id,
+            label: f.label,
+            status: f.status,
+            amount: f.status === 'fixed' && f.amount !== undefined ? String(f.amount) : '',
+            note: f.note ?? '',
+          }))
+        : [
+            {
+              id: 'fee-1',
+              label: existing.feeLabel || 'Dealer documentation fee',
+              status: existing.knownFeesUnknown ? 'unknown' : 'fixed',
+              amount: existing.knownFeesUnknown ? '' : String(existing.knownFees),
+              note: '',
+            },
+          ];
+
     return {
       sellerName: existing.sellerName,
       sellerLocation: existing.sellerLocation,
       matchingScope: existing.matchingScope,
       unitPrice: String(existing.unitPrice),
-      knownFees: String(existing.knownFees),
-      feeLabel: existing.feeLabel,
-      taxAndRegistrationNote: existing.taxAndRegistrationNote,
+      itemizedFees: feeRows,
+      taxAndRegistrationNote: existing.taxTreatment || existing.taxAndRegistrationNote,
+      paymentTerms: existing.paymentTerms ?? '',
+      includedItemsText: (existing.includedItems ?? []).join('\n'),
+      excludedItemsText: (existing.excludedItems ?? []).join('\n'),
       minQuantity: String(existing.minQuantity),
       maxQuantity: String(existing.maxQuantity),
       fulfillmentMethod: existing.fulfillmentMethod,
@@ -68,10 +162,13 @@ function buildInitialForm(packet: SellerPacketResponse): QuoteFormState {
       claimByDate: existing.claimByDate,
       privateClaimInstructions: existing.privateClaimInstructions,
       revisionSummary: '',
+      ...extractVehicleFormDefaults(existing.quotedVehicle ?? packet.vehicleSpecs),
     };
   }
 
   const isMaverick = packet.poolId === 'pool-maverick-xlt';
+  const isVehicleMotor =
+    packet.category === 'Vehicles' && packet.vehicleSpecs?.assetClass !== 'accessory';
   return {
     sellerName: isMaverick ? 'Alder Motor Co.' : 'Pacific Northwest Group Supply (Fictional)',
     sellerLocation: isMaverick
@@ -81,11 +178,29 @@ function buildInitialForm(packet: SellerPacketResponse): QuoteFormState {
       ? '2026 Ford Maverick XLT Hybrid AWD · Portland metro pickup · Standard XLT Equipment Group'
       : `${packet.title} · Matching shared pool requirements`,
     unitPrice: isMaverick ? '27900' : '1200',
-    knownFees: isMaverick ? '395' : '75',
-    feeLabel: isMaverick ? 'Dealer documentation fee' : 'Handling & delivery fee',
+    itemizedFees: [
+      {
+        id: 'fee-1',
+        label: isMaverick ? 'Dealer documentation fee' : 'Handling & delivery fee',
+        status: 'fixed',
+        amount: isMaverick ? '395' : '75',
+        note: '',
+      },
+    ],
     taxAndRegistrationNote: isMaverick
       ? 'Excludes Oregon privilege tax, title, and DMV registration.'
-      : 'Excludes applicable local tax.',
+      : 'Excludes applicable local sales/use tax, title, and registration.',
+    paymentTerms: isVehicleMotor
+      ? 'Direct buyer-to-dealer wire, certified funds, or buyer-arranged financing after unlock.'
+      : 'Direct buyer-to-seller payment upon unlock.',
+    includedItemsText: isMaverick
+      ? 'Factory 2026 Ford Maverick XLT Hybrid AWD\nStandard XLT Equipment Group\nPre-delivery inspection'
+      : '',
+    excludedItemsText: isMaverick
+      ? 'State privilege/sales tax, title & DMV registration\nOptional dealer add-ons or extended service plans'
+      : packet.vehicleSpecs?.vehicleType === 'semi_tractor'
+        ? 'Semi-trailer (tractor unit only)\nFederal Excise Tax (FET), IRP/IFTA registration & state taxes'
+        : '',
     minQuantity: String(packet.minQuantity),
     maxQuantity: String(packet.maxQuantity),
     fulfillmentMethod: isMaverick
@@ -98,7 +213,76 @@ function buildInitialForm(packet: SellerPacketResponse): QuoteFormState {
       ? 'SIMULATED DEMO INSTRUCTIONS: Present reference code to Alder Motor Co. Fleet Desk in Portland before Dec 20, 2026 to complete direct buyer-to-seller paperwork and payment. No real payment or reservation has been made.'
       : 'SIMULATED DEMO INSTRUCTIONS: Contact the seller desk directly with your claim reference code before the claim-by date.',
     revisionSummary: '',
+    ...extractVehicleFormDefaults(packet.vehicleSpecs),
   };
+}
+
+function buildQuotedVehicleFromForm(
+  form: QuoteFormState,
+  packet: SellerPacketResponse
+): VehicleSpecProfile | undefined {
+  if (packet.category !== 'Vehicles' || packet.vehicleSpecs?.assetClass === 'accessory') {
+    return undefined;
+  }
+  const qv: VehicleSpecProfile = { assetClass: 'vehicle' };
+  if (form.qVehType) qv.vehicleType = form.qVehType;
+  if (form.qVehCondition) qv.condition = form.qVehCondition;
+  if (form.qVehMake.trim()) qv.make = form.qVehMake.trim();
+  if (form.qVehModel.trim()) qv.model = form.qVehModel.trim();
+  if (form.qVehYear.trim() && Number.isFinite(Number(form.qVehYear.trim()))) {
+    qv.year = Math.round(Number(form.qVehYear.trim()));
+  }
+  if (form.qVehTrim.trim()) qv.trim = form.qVehTrim.trim();
+  if (form.qVehPowertrain.trim()) qv.powertrain = form.qVehPowertrain.trim();
+  if (form.qVehDrivetrain.trim()) qv.drivetrain = form.qVehDrivetrain.trim();
+  if (form.qVehTransmission.trim()) qv.transmission = form.qVehTransmission.trim();
+  if (form.qVehBodyConfig.trim()) qv.bodyConfiguration = form.qVehBodyConfig.trim();
+  if (form.qVehAxleConfig.trim()) qv.axleConfiguration = form.qVehAxleConfig.trim();
+  if (form.qVehCabOrSleeper.trim()) qv.cabOrSleeper = form.qVehCabOrSleeper.trim();
+  if (form.qVehTrailerInclusion) qv.trailerInclusion = form.qVehTrailerInclusion;
+  if (form.qVehBusType.trim()) qv.busType = form.qVehBusType.trim();
+  if (form.qVehSeatingCapacity.trim() && Number.isFinite(Number(form.qVehSeatingCapacity.trim()))) {
+    qv.seatingCapacity = Math.round(Number(form.qVehSeatingCapacity.trim()));
+  }
+  if (form.qVehAccessibility.trim()) qv.accessibilityRequirement = form.qVehAccessibility.trim();
+  if (form.qVehMileageValue.trim() && Number.isFinite(Number(form.qVehMileageValue.trim()))) {
+    qv.mileage = { value: Number(form.qVehMileageValue.trim()), unit: form.qVehMileageUnit };
+  }
+  // Carry forward any numeric weight specs from existing offer if unmodified
+  if (packet.currentOffer?.quotedVehicle) {
+    const prev = packet.currentOffer.quotedVehicle;
+    if (prev.gvwr) qv.gvwr = prev.gvwr;
+    if (prev.gcwr) qv.gcwr = prev.gcwr;
+    if (prev.payloadCapacity) qv.payloadCapacity = prev.payloadCapacity;
+    if (prev.towingCapacity) qv.towingCapacity = prev.towingCapacity;
+  }
+  return qv;
+}
+
+function buildQuoteFeeItemsFromDraft(rows: FeeDraftRow[]): QuoteFeeItem[] {
+  const out: QuoteFeeItem[] = [];
+  for (const r of rows) {
+    const label = r.label.trim();
+    if (!label) continue;
+    if (r.status === 'unknown') {
+      out.push({
+        id: r.id,
+        label,
+        status: 'unknown',
+        note: r.note.trim() || undefined,
+      });
+    } else {
+      const amt = Number(r.amount);
+      out.push({
+        id: r.id,
+        label,
+        status: 'fixed',
+        amount: Number.isFinite(amt) && amt >= 0 ? amt : 0,
+        note: r.note.trim() || undefined,
+      });
+    }
+  }
+  return out;
 }
 
 export function SellerQuotePage({ token }: { token: string }) {
@@ -181,12 +365,26 @@ export function SellerQuotePage({ token }: { token: string }) {
   }
 
   const unitPriceNum = Number(form.unitPrice);
-  const feesNum = Number(form.knownFees);
+  const feeItems = buildQuoteFeeItemsFromDraft(form.itemizedFees);
+  const feeSummary = normalizeQuoteItemizedFees(feeItems, 0, 'Known fees');
   const calcSubtotal =
-    (Number.isFinite(unitPriceNum) ? unitPriceNum : 0) + (Number.isFinite(feesNum) ? feesNum : 0);
+    (Number.isFinite(unitPriceNum) ? unitPriceNum : 0) + feeSummary.knownFeesTotal;
   const isRevising = packet.currentOffer !== undefined;
   const isLocked =
     packet.metrics.effectiveStage === 'unlocked' || packet.metrics.effectiveStage === 'closed';
+  const isMotorVehiclePool =
+    packet.category === 'Vehicles' && packet.vehicleSpecs?.assetClass !== 'accessory';
+
+  const includedItems = form.includedItemsText
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const excludedItems = form.excludedItemsText
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const quotedVehicle = buildQuotedVehicleFromForm(form, packet);
 
   const previewOffer: SellerOffer = {
     version: isRevising ? packet.currentOffer!.version + 1 : 1,
@@ -195,10 +393,17 @@ export function SellerQuotePage({ token }: { token: string }) {
     matchingScope: form.matchingScope || packet.title,
     currency: 'USD',
     unitPrice: Number.isFinite(unitPriceNum) ? unitPriceNum : 0,
-    knownFees: Number.isFinite(feesNum) ? feesNum : 0,
-    feeLabel: form.feeLabel || 'Known fee',
+    knownFees: feeSummary.knownFeesTotal,
+    knownFeesUnknown: feeSummary.hasUnknownFees,
+    feeLabel: feeSummary.feeLabel,
+    itemizedFees: feeSummary.itemizedFees,
     subtotal: calcSubtotal,
     taxAndRegistrationNote: form.taxAndRegistrationNote,
+    taxTreatment: form.taxAndRegistrationNote,
+    paymentTerms: form.paymentTerms.trim() || undefined,
+    includedItems: includedItems.length > 0 ? includedItems : undefined,
+    excludedItems: excludedItems.length > 0 ? excludedItems : undefined,
+    quotedVehicle,
     minQuantity: Number(form.minQuantity) || packet.minQuantity,
     maxQuantity: Number(form.maxQuantity) || packet.maxQuantity,
     fulfillmentMethod: form.fulfillmentMethod,
@@ -220,6 +425,45 @@ export function SellerQuotePage({ token }: { token: string }) {
     });
   };
 
+  const updateFeeRow = (id: string, patch: Partial<FeeDraftRow>) => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        itemizedFees: prev.itemizedFees.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+      };
+    });
+  };
+
+  const addFeeRow = () => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        itemizedFees: [
+          ...prev.itemizedFees,
+          {
+            id: `fee-${Date.now().toString(36)}`,
+            label: '',
+            status: 'fixed',
+            amount: '0',
+            note: '',
+          },
+        ],
+      };
+    });
+  };
+
+  const removeFeeRow = (id: string) => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        itemizedFees: prev.itemizedFees.filter((row) => row.id !== id),
+      };
+    });
+  };
+
   const handlePublish = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
@@ -235,9 +479,16 @@ export function SellerQuotePage({ token }: { token: string }) {
         matchingScope: form.matchingScope,
         currency: 'USD',
         unitPrice: Number(form.unitPrice),
-        knownFees: Number(form.knownFees),
-        feeLabel: form.feeLabel,
+        knownFees: feeSummary.knownFeesTotal,
+        knownFeesUnknown: feeSummary.hasUnknownFees,
+        feeLabel: feeSummary.feeLabel,
+        itemizedFees: feeSummary.itemizedFees,
         taxAndRegistrationNote: form.taxAndRegistrationNote,
+        taxTreatment: form.taxAndRegistrationNote,
+        paymentTerms: form.paymentTerms.trim() || undefined,
+        includedItems: includedItems.length > 0 ? includedItems : undefined,
+        excludedItems: excludedItems.length > 0 ? excludedItems : undefined,
+        quotedVehicle,
         minQuantity: Number(form.minQuantity),
         maxQuantity: Number(form.maxQuantity),
         fulfillmentMethod: form.fulfillmentMethod,
@@ -251,13 +502,14 @@ export function SellerQuotePage({ token }: { token: string }) {
       setPublishedBanner(
         res.isRevision
           ? `Revised Offer v${res.offer.version} published! Prior confirmations were cleared and buyers must reconfirm.`
-          : `Offer v${res.offer.version} published (${formatCurrency(res.offer.subtotal)} subtotal). Buyers can now review and confirm.`
+          : `Offer v${res.offer.version} published (${formatCurrency(res.offer.subtotal)}${
+              res.offer.knownFeesUnknown ? ' + TBD fees' : ' subtotal'
+            }). Buyers can now review and confirm.`
       );
       const updated = await fetchSellerPacket(token);
       setPacket(updated);
       setForm(buildInitialForm(updated));
     } catch (err) {
-      // Preserve draft values on any validation error!
       if (err instanceof ApiRequestError) {
         setSubmitError(err.error.message);
         if (err.error.fieldErrors) setFieldErrors(err.error.fieldErrors);
@@ -384,7 +636,7 @@ export function SellerQuotePage({ token }: { token: string }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label htmlFor="s-name" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                Seller name *
+                Seller / dealer name *
               </label>
               <input
                 id="s-name"
@@ -400,7 +652,7 @@ export function SellerQuotePage({ token }: { token: string }) {
 
             <div>
               <label htmlFor="s-loc" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                Seller location
+                Dealer location
               </label>
               <input
                 id="s-loc"
@@ -412,9 +664,244 @@ export function SellerQuotePage({ token }: { token: string }) {
             </div>
           </div>
 
+          {/* Quoted Vehicle & Configuration Section (only for motor-vehicle pools) */}
+          {isMotorVehiclePool && (
+            <div className="p-4 bg-[#FBF9F4] border border-[#C6D8CE] space-y-3">
+              <div>
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#152B23]">
+                  Vehicle &amp; configuration actually quoted
+                </p>
+                <p className="text-[11px] text-[#516B61]">
+                  Confirm exact build quoted. Any conflict with the pool&apos;s required specs will
+                  be flagged prominently to buyers.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label htmlFor="sq-type" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Vehicle type
+                  </label>
+                  <select
+                    id="sq-type"
+                    value={form.qVehType}
+                    onChange={(e) => updateField('qVehType', e.target.value as VehicleSubType | '')}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2 bg-white border border-[#C6D8CE] text-xs"
+                  >
+                    <option value="">Not specified</option>
+                    {VEHICLE_TYPE_LIST.map((vt) => (
+                      <option key={vt.id} value={vt.id}>
+                        {vt.shortLabel}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="sq-cond" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Condition
+                  </label>
+                  <select
+                    id="sq-cond"
+                    value={form.qVehCondition}
+                    onChange={(e) =>
+                      updateField('qVehCondition', e.target.value as VehicleCondition | '')
+                    }
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2 bg-white border border-[#C6D8CE] text-xs"
+                  >
+                    <option value="">Not specified</option>
+                    <option value="new">New</option>
+                    <option value="used">Used</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="sq-year" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Model year
+                  </label>
+                  <input
+                    id="sq-year"
+                    type="number"
+                    min={1980}
+                    max={2035}
+                    value={form.qVehYear}
+                    onChange={(e) => updateField('qVehYear', e.target.value)}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] font-mono text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label htmlFor="sq-make" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Make
+                  </label>
+                  <input
+                    id="sq-make"
+                    value={form.qVehMake}
+                    onChange={(e) => updateField('qVehMake', e.target.value)}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="sq-model" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Model
+                  </label>
+                  <input
+                    id="sq-model"
+                    value={form.qVehModel}
+                    onChange={(e) => updateField('qVehModel', e.target.value)}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="sq-trim" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Trim / config
+                  </label>
+                  <input
+                    id="sq-trim"
+                    value={form.qVehTrim}
+                    onChange={(e) => updateField('qVehTrim', e.target.value)}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label htmlFor="sq-pt" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Powertrain
+                  </label>
+                  <input
+                    id="sq-pt"
+                    value={form.qVehPowertrain}
+                    onChange={(e) => updateField('qVehPowertrain', e.target.value)}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="sq-dt" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Drivetrain
+                  </label>
+                  <input
+                    id="sq-dt"
+                    value={form.qVehDrivetrain}
+                    onChange={(e) => updateField('qVehDrivetrain', e.target.value)}
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="sq-axle" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                    Axle (commercial)
+                  </label>
+                  <input
+                    id="sq-axle"
+                    value={form.qVehAxleConfig}
+                    onChange={(e) => updateField('qVehAxleConfig', e.target.value)}
+                    placeholder="e.g., 6x4 or 4x2"
+                    disabled={isLocked}
+                    className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                  />
+                </div>
+              </div>
+
+              {(form.qVehType === 'semi_tractor' || form.qVehType === 'commercial_van_truck') && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label htmlFor="sq-cab" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                      Cab / sleeper or body
+                    </label>
+                    <input
+                      id="sq-cab"
+                      value={form.qVehCabOrSleeper || form.qVehBodyConfig}
+                      onChange={(e) =>
+                        form.qVehType === 'semi_tractor'
+                          ? updateField('qVehCabOrSleeper', e.target.value)
+                          : updateField('qVehBodyConfig', e.target.value)
+                      }
+                      disabled={isLocked}
+                      className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                    />
+                  </div>
+                  {form.qVehType === 'semi_tractor' && (
+                    <div>
+                      <label htmlFor="sq-trailer" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                        Trailer inclusion
+                      </label>
+                      <select
+                        id="sq-trailer"
+                        value={form.qVehTrailerInclusion}
+                        onChange={(e) =>
+                          updateField('qVehTrailerInclusion', e.target.value as TrailerInclusion | '')
+                        }
+                        disabled={isLocked}
+                        className="mt-1 w-full h-9 px-2 bg-white border border-[#C6D8CE] text-xs"
+                      >
+                        <option value="">Not specified (assumed excluded)</option>
+                        <option value="tractor_only">Tractor unit only (no trailer)</option>
+                        <option value="includes_trailer">Explicitly includes trailer</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {form.qVehType === 'bus' && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label htmlFor="sq-bustype" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                      Bus type
+                    </label>
+                    <input
+                      id="sq-bustype"
+                      value={form.qVehBusType}
+                      onChange={(e) => updateField('qVehBusType', e.target.value)}
+                      disabled={isLocked}
+                      className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="sq-seats" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                      Seating capacity
+                    </label>
+                    <input
+                      id="sq-seats"
+                      type="number"
+                      min={1}
+                      value={form.qVehSeatingCapacity}
+                      onChange={(e) => updateField('qVehSeatingCapacity', e.target.value)}
+                      disabled={isLocked}
+                      className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="sq-ada" className="block font-mono text-[10px] uppercase text-[#516B61]">
+                      Accessibility / ADA
+                    </label>
+                    <input
+                      id="sq-ada"
+                      value={form.qVehAccessibility}
+                      onChange={(e) => updateField('qVehAccessibility', e.target.value)}
+                      disabled={isLocked}
+                      className="mt-1 w-full h-9 px-2.5 bg-white border border-[#C6D8CE] text-xs"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div>
             <label htmlFor="s-scope" className="block font-mono text-[11px] uppercase text-[#152B23]">
-              Matching specification & scope *
+              Matching specification &amp; scope *
             </label>
             <textarea
               id="s-scope"
@@ -429,12 +916,12 @@ export function SellerQuotePage({ token }: { token: string }) {
             )}
           </div>
 
-          {/* Pricing & Calculated Subtotal */}
+          {/* Pricing & Itemized Fees (Distinguishing Fixed, $0, and Unknown/TBD) */}
           <div className="p-4 bg-[#F6F1E5]/70 border border-[#C6D8CE] space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label htmlFor="s-price" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                  Unit price (USD) *
+                  Per-{packet.unitSingular} price (USD) *
                 </label>
                 <input
                   id="s-price"
@@ -451,56 +938,100 @@ export function SellerQuotePage({ token }: { token: string }) {
                 )}
               </div>
 
-              <div>
-                <label htmlFor="s-fees" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                  Known fees (USD) *
-                </label>
-                <input
-                  id="s-fees"
-                  type="number"
-                  min={0}
-                  step="1"
-                  value={form.knownFees}
-                  onChange={(e) => updateField('knownFees', e.target.value)}
-                  disabled={isLocked}
-                  className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] font-mono text-sm"
-                />
-                {fieldErrors.knownFees && (
-                  <p className="mt-1 text-xs text-[#A63A2B]">{fieldErrors.knownFees}</p>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="s-feelabel" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                  Fee label *
-                </label>
-                <input
-                  id="s-feelabel"
-                  value={form.feeLabel}
-                  onChange={(e) => updateField('feeLabel', e.target.value)}
-                  disabled={isLocked}
-                  className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
-                />
-                {fieldErrors.feeLabel && (
-                  <p className="mt-1 text-xs text-[#A63A2B]">{fieldErrors.feeLabel}</p>
-                )}
-              </div>
-
               <div className="flex flex-col justify-end">
                 <div className="h-10 px-3 bg-[#152B23] text-white flex items-center justify-between font-mono text-xs">
-                  <span>Calculated subtotal</span>
+                  <span>{feeSummary.hasUnknownFees ? 'Base + fixed subtotal' : 'Calculated subtotal'}</span>
                   <strong className="text-[#FFBF32] tabular-nums">
                     {formatCurrency(calcSubtotal)}
+                    {feeSummary.hasUnknownFees ? ' + TBD' : ''}
                   </strong>
                 </div>
               </div>
             </div>
 
+            {/* Itemized Fees Editor */}
+            <div className="space-y-2 pt-1 border-t border-[#C6D8CE]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-[10px] font-semibold uppercase text-[#152B23]">
+                  Itemized fees (distinguish $0 from Unknown / TBD)
+                </span>
+                {!isLocked && (
+                  <button
+                    type="button"
+                    onClick={addFeeRow}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-white border border-[#152B23] font-mono text-[10px] uppercase cursor-pointer hover:bg-[#EAF7EF]"
+                  >
+                    <Plus className="w-3 h-3" aria-hidden="true" />
+                    <span>Add fee line</span>
+                  </button>
+                )}
+              </div>
+
+              {form.itemizedFees.map((row) => (
+                <div
+                  key={row.id}
+                  className="p-2.5 bg-white border border-[#C6D8CE] grid grid-cols-1 sm:grid-cols-12 gap-2 items-center"
+                >
+                  <input
+                    aria-label="Fee label"
+                    value={row.label}
+                    onChange={(e) => updateFeeRow(row.id, { label: e.target.value })}
+                    placeholder="e.g., Documentation fee or Upfit delivery"
+                    disabled={isLocked}
+                    className="sm:col-span-5 h-9 px-2.5 border border-[#C6D8CE] text-xs"
+                  />
+                  <select
+                    aria-label="Fee status"
+                    value={row.status}
+                    onChange={(e) =>
+                      updateFeeRow(row.id, {
+                        status: e.target.value as 'fixed' | 'unknown',
+                        amount: e.target.value === 'unknown' ? '' : row.amount || '0',
+                      })
+                    }
+                    disabled={isLocked}
+                    className="sm:col-span-3 h-9 px-2 border border-[#C6D8CE] text-xs"
+                  >
+                    <option value="fixed">Fixed USD</option>
+                    <option value="unknown">Unknown / TBD</option>
+                  </select>
+                  <div className="sm:col-span-3">
+                    {row.status === 'fixed' ? (
+                      <input
+                        aria-label="Fee amount USD"
+                        type="number"
+                        min={0}
+                        step="1"
+                        value={row.amount}
+                        onChange={(e) => updateFeeRow(row.id, { amount: e.target.value })}
+                        disabled={isLocked}
+                        className="w-full h-9 px-2 border border-[#C6D8CE] font-mono text-xs"
+                      />
+                    ) : (
+                      <span className="block px-2 py-1.5 bg-[#FFF8E6] border border-[#E6C57A] font-mono text-[10px] text-[#8A5406] text-center uppercase">
+                        TBD
+                      </span>
+                    )}
+                  </div>
+                  <div className="sm:col-span-1 flex justify-end">
+                    {!isLocked && form.itemizedFees.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeFeeRow(row.id)}
+                        aria-label="Remove fee row"
+                        className="p-1.5 text-[#516B61] hover:text-[#A63A2B] cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
             <div>
               <label htmlFor="s-tax" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                Tax & registration treatment
+                Stated tax &amp; registration treatment
               </label>
               <input
                 id="s-tax"
@@ -508,6 +1039,52 @@ export function SellerQuotePage({ token }: { token: string }) {
                 onChange={(e) => updateField('taxAndRegistrationNote', e.target.value)}
                 disabled={isLocked}
                 className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="s-pay" className="block font-mono text-[11px] uppercase text-[#152B23]">
+                Payment terms
+              </label>
+              <input
+                id="s-pay"
+                value={form.paymentTerms}
+                onChange={(e) => updateField('paymentTerms', e.target.value)}
+                placeholder="e.g., Direct buyer wire or certified funds at delivery"
+                disabled={isLocked}
+                className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Included vs Excluded Items */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="s-inc" className="block font-mono text-[11px] uppercase text-[#152B23]">
+                What is included (one per line)
+              </label>
+              <textarea
+                id="s-inc"
+                rows={3}
+                value={form.includedItemsText}
+                onChange={(e) => updateField('includedItemsText', e.target.value)}
+                placeholder={'Standard factory equipment\nPre-delivery inspection'}
+                disabled={isLocked}
+                className="mt-1 w-full p-2.5 bg-[#EAF7EF]/40 border border-[#C6D8CE] text-xs"
+              />
+            </div>
+            <div>
+              <label htmlFor="s-exc" className="block font-mono text-[11px] uppercase text-[#A63A2B]">
+                Not included / excluded (one per line)
+              </label>
+              <textarea
+                id="s-exc"
+                rows={3}
+                value={form.excludedItemsText}
+                onChange={(e) => updateField('excludedItemsText', e.target.value)}
+                placeholder={'Delivery transport / upfit\nSemi-trailer (if tractor only)\nTax, title & registration'}
+                disabled={isLocked}
+                className="mt-1 w-full p-2.5 bg-[#FDF4F2]/40 border border-[#E6C4BE] text-xs"
               />
             </div>
           </div>
@@ -554,7 +1131,7 @@ export function SellerQuotePage({ token }: { token: string }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label htmlFor="s-close" className="block font-mono text-[11px] uppercase text-[#152B23]">
-                Offer closes (Pacific time) *
+                Offer expires (Pacific time) *
               </label>
               <input
                 id="s-close"
@@ -626,7 +1203,7 @@ export function SellerQuotePage({ token }: { token: string }) {
                 id="s-rev"
                 value={form.revisionSummary}
                 onChange={(e) => updateField('revisionSummary', e.target.value)}
-                placeholder="e.g., Adjusted vehicle price or extended deadline"
+                placeholder="e.g., Adjusted vehicle price or updated axle configuration"
                 disabled={isLocked}
                 className="mt-1 w-full h-10 px-3 bg-[#F6F1E5] border border-[#152B23]/40 text-sm"
               />
@@ -658,6 +1235,12 @@ export function SellerQuotePage({ token }: { token: string }) {
             offer={previewOffer}
             unitSingular={packet.unitSingular}
             unitPlural={packet.unitPlural}
+            pool={{
+              category: packet.category,
+              title: packet.title,
+              vehicleSpecs: packet.vehicleSpecs,
+              sharedRequirements: packet.sharedRequirements,
+            }}
             previewMode
           />
 
@@ -678,7 +1261,8 @@ export function SellerQuotePage({ token }: { token: string }) {
                       {formatDeadlineCompact(old.closeAt)}
                     </span>
                     <span className="font-mono tabular-nums text-[#516B61]">
-                      {formatCurrency(old.subtotal)} subtotal
+                      {formatCurrency(old.subtotal)}
+                      {old.knownFeesUnknown ? ' + TBD' : ' subtotal'}
                     </span>
                   </div>
                 ))}

@@ -79,6 +79,7 @@ export interface SellerPacketResponse {
   goalDate: string;
   sharedRequirements: string[];
   categorySpecs: Pool['categorySpecs'];
+  vehicleSpecs?: Pool['vehicleSpecs'];
   organizerName: string;
   organizerNote: string;
   quoteRequestedAt?: string;
@@ -217,6 +218,15 @@ interface TallyContextValue {
   simulateConfirmAction: (poolId?: string) => Promise<{ unlockedNow: boolean; simulatedLabel: string }>;
   advanceClockAction: (poolId?: string) => Promise<void>;
   simulateRevisionAction: (poolId?: string) => Promise<SellerOffer>;
+  setDemoPoolPlacementAction: (
+    poolId: string,
+    patch: {
+      tallyCertified?: boolean;
+      partnerDealerLabel?: string;
+      paidFeatured?: boolean;
+      sponsorName?: string;
+    }
+  ) => Promise<void>;
 }
 
 const TallyContext = createContext<TallyContextValue | null>(null);
@@ -846,6 +856,34 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
     [apiFetch, runMutation, showBanner]
   );
 
+  const setDemoPoolPlacementAction = useCallback(
+    async (
+      poolId: string,
+      patch: {
+        tallyCertified?: boolean;
+        partnerDealerLabel?: string;
+        paidFeatured?: boolean;
+        sponsorName?: string;
+      }
+    ) => {
+      await runMutation(async () => {
+        const res = await apiFetch<{ poolId: string; session: ClientSessionResponse }>(
+          '/api/demo/pool-placement',
+          {
+            method: 'POST',
+            body: { poolId, ...patch },
+          }
+        );
+        setSession(res.session);
+        showBanner(
+          'info',
+          '[Demo-only simulation] Updated Tally Certified / Paid Featured placement flags for this session.'
+        );
+      });
+    },
+    [apiFetch, runMutation, showBanner]
+  );
+
   const value = useMemo<TallyContextValue>(
     () => ({
       sessionId,
@@ -891,6 +929,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       simulateConfirmAction,
       advanceClockAction,
       simulateRevisionAction,
+      setDemoPoolPlacementAction,
     }),
     [
       sessionId,
@@ -936,6 +975,7 @@ export function TallyProvider({ children }: { children: React.ReactNode }) {
       simulateConfirmAction,
       advanceClockAction,
       simulateRevisionAction,
+      setDemoPoolPlacementAction,
     ]
   );
 

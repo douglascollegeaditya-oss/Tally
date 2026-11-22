@@ -11,6 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { evaluateMemberEligibility } from '../domain/tallyEngine.ts';
+import { evaluateQuoteCompatibility } from '../domain/vehicleEngine.ts';
 import { ApiRequestError, useTally } from '../lib/api.ts';
 import {
   formatCalendarDate,
@@ -22,6 +23,7 @@ import {
   getPoolShortCode,
 } from '../lib/format.ts';
 import { Link } from '../lib/router.tsx';
+import { PlacementBadges } from '../components/PlacementBadges.tsx';
 import { QuoteReceipt } from '../components/QuoteReceipt.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
 
@@ -119,6 +121,8 @@ export function OfferReviewPage({ poolId }: { poolId: string }) {
   const isPassed = member?.status === 'passed';
   const isWaitlisted = member?.status === 'waitlisted';
   const isFollowing = pool.followers.includes(actorId);
+  const quoteCompat =
+    pool.category === 'Vehicles' ? evaluateQuoteCompatibility(pool, offer) : null;
 
   const handleConfirm = async () => {
     setActionError(null);
@@ -258,6 +262,8 @@ export function OfferReviewPage({ poolId }: { poolId: string }) {
           </span>
         </div>
       </div>
+
+      <PlacementBadges pool={pool} variant="detail" showDisclosurePanel />
 
       {/* Revision Alert Banner if Version > 1 */}
       {offer.version > 1 && (
@@ -416,7 +422,7 @@ export function OfferReviewPage({ poolId }: { poolId: string }) {
                     {member && memberEligibility?.eligible
                       ? `${formatUnit(member.quantity, pool.unitSingular, pool.unitPlural)} · ${formatCurrency(
                           offer.subtotal * member.quantity
-                        )}`
+                        )}${offer.knownFeesUnknown ? ' + TBD fees' : ''}`
                       : 'Not eligible'}
                   </span>
                 </div>
@@ -424,6 +430,21 @@ export function OfferReviewPage({ poolId }: { poolId: string }) {
                   <span>Cutoff: {formatDateTimePacific(offer.closeAt, offer.timezoneLabel)}</span>
                   <span>Pickup by {formatCalendarDate(offer.claimByDate)}</span>
                 </div>
+              </div>
+            )}
+
+            {quoteCompat && !quoteCompat.compatible && (
+              <div
+                role="alert"
+                className="p-3 bg-[#FDF0EE] border-2 border-[#A63A2B] text-xs text-[#152B23] space-y-1"
+              >
+                <p className="font-mono text-[10px] font-bold uppercase text-[#A63A2B] flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Dealer quote conflicts with pool specs</span>
+                </p>
+                <p className="text-[11px] text-[#A63A2B] font-medium">
+                  {quoteCompat.conflicts.join(' ')}
+                </p>
               </div>
             )}
 
@@ -669,6 +690,7 @@ export function OfferReviewPage({ poolId }: { poolId: string }) {
             unitSingular={pool.unitSingular}
             unitPlural={pool.unitPlural}
             quantity={member && memberEligibility?.eligible ? member.quantity : 1}
+            pool={pool}
           />
 
           {/* Offer Version History */}
@@ -743,6 +765,7 @@ export function OfferReviewPage({ poolId }: { poolId: string }) {
             <div className="min-w-0">
               <p className="font-mono text-xs font-bold text-[#152B23] tabular-nums truncate">
                 {metrics.confirmedUnits} of {metrics.targetMin} · {formatCurrency(offer.subtotal)}
+                {offer.knownFeesUnknown ? ' + TBD' : ''}
               </p>
               <p className="font-mono text-[10px] text-[#516B61] truncate">
                 {stage === 'unlocked'

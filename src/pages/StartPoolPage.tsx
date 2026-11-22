@@ -19,10 +19,20 @@ import { ApiRequestError, useTally } from '../lib/api.ts';
 import { formatCalendarDate } from '../lib/format.ts';
 import { Link, useRouter } from '../lib/router.tsx';
 import {
+  buildVehicleCategorySpecs,
+  formatYearRequirement,
+  getVehicleTypeLabel,
+  validateVehicleSpecs,
+} from '../domain/vehicleEngine.ts';
+import {
   CompetingPoolsComparison,
   type ComparisonQuerySummary,
 } from '../components/CompetingPoolsComparison.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
+import {
+  buildVehicleSpecProfileFromDraft,
+  VehicleSpecsFormFields,
+} from '../components/VehicleSpecsFormFields.tsx';
 
 const DEFAULT_UNITS: Record<PoolCategory, { singular: string; plural: string }> = {
   Vehicles: { singular: 'vehicle', plural: 'vehicles' },
@@ -123,16 +133,35 @@ export function StartPoolPage() {
     }
   }, [step]);
 
+  const vehicleUnits = (() => {
+    if (draft.category !== 'Vehicles') return null;
+    if (draft.vehAssetClass === 'accessory') return { singular: 'unit', plural: 'units' };
+    switch (draft.vehType) {
+      case 'bus':
+        return { singular: 'bus', plural: 'buses' };
+      case 'semi_tractor':
+        return { singular: 'tractor', plural: 'tractors' };
+      case 'commercial_van_truck':
+        return { singular: 'truck', plural: 'trucks' };
+      default:
+        return DEFAULT_UNITS.Vehicles;
+    }
+  })();
+
   const unitSingular = !draft.category
     ? 'unit'
-    : draft.category === 'Other'
-      ? draft.otherUnitSingular.trim() || 'unit'
-      : DEFAULT_UNITS[draft.category].singular;
+    : draft.category === 'Vehicles' && vehicleUnits
+      ? vehicleUnits.singular
+      : draft.category === 'Other'
+        ? draft.otherUnitSingular.trim() || 'unit'
+        : DEFAULT_UNITS[draft.category].singular;
   const unitPlural = !draft.category
     ? 'units'
-    : draft.category === 'Other'
-      ? draft.otherUnitPlural.trim() || 'units'
-      : DEFAULT_UNITS[draft.category].plural;
+    : draft.category === 'Vehicles' && vehicleUnits
+      ? vehicleUnits.plural
+      : draft.category === 'Other'
+        ? draft.otherUnitPlural.trim() || 'units'
+        : DEFAULT_UNITS[draft.category].plural;
 
   const updateField = <K extends keyof StartPoolDraftState>(
     key: K,
@@ -164,14 +193,38 @@ export function StartPoolPage() {
 
     switch (draft.category) {
       case 'Vehicles': {
-        const specs: PoolSpecField[] = [];
-        pushIfPresent(specs, 'Model', draft.vehModel);
-        pushIfPresent(specs, 'Trim', draft.vehTrim);
-        pushIfPresent(specs, 'Pickup', draft.deliveryOrDestination || draft.location);
-        const combined = `${draft.vehModel.trim()} ${draft.vehTrim.trim()}`.trim();
+        const vehicleSpecs = buildVehicleSpecProfileFromDraft(draft);
+        const specs = buildVehicleCategorySpecs(
+          vehicleSpecs,
+          draft.deliveryOrDestination || draft.location
+        );
+        if (vehicleSpecs.assetClass === 'accessory') {
+          return {
+            specs,
+            primaryLabel: 'Accessory model',
+            primaryValues: [draft.title.trim() || 'Matches group specification'],
+            modelOrVariant: draft.title.trim(),
+          };
+        }
+        const summaryParts = [
+          formatYearRequirement(vehicleSpecs),
+          vehicleSpecs.make,
+          vehicleSpecs.model,
+          vehicleSpecs.trim,
+          vehicleSpecs.powertrain,
+          vehicleSpecs.axleConfiguration || vehicleSpecs.drivetrain,
+        ].filter(Boolean);
+        const combined =
+          summaryParts.join(' ').trim() ||
+          `${draft.vehModel.trim()} ${draft.vehTrim.trim()}`.trim();
         return {
           specs,
-          primaryLabel: 'Model & trim',
+          primaryLabel:
+            vehicleSpecs.vehicleType === 'semi_tractor'
+              ? 'Tractor configuration'
+              : vehicleSpecs.vehicleType === 'bus'
+                ? 'Bus specification'
+                : 'Vehicle configuration',
           primaryValues: combined ? [combined] : [draft.title.trim() || 'Matches group specification'],
           modelOrVariant: combined,
         };
@@ -272,6 +325,8 @@ export function StartPoolPage() {
       modelOrVariant: modelOrVariant || undefined,
       primaryOptionValues: primaryValues.filter((v) => v !== 'Matches group specification'),
       categorySpecs: specs,
+      vehicleSpecs:
+        draft.category === 'Vehicles' ? buildVehicleSpecProfileFromDraft(draft) : undefined,
       includeUnavailable: true,
     };
   };
@@ -318,6 +373,12 @@ export function StartPoolPage() {
       (!draft.otherUnitSingular.trim() || !draft.otherUnitPlural.trim())
     ) {
       errs.otherUnitSingular = 'Enter both singular and plural unit labels.';
+    }
+    if (draft.category === 'Vehicles') {
+      const vehValidation = validateVehicleSpecs(buildVehicleSpecProfileFromDraft(draft));
+      for (const [k, msg] of Object.entries(vehValidation.errors)) {
+        errs[k] = msg;
+      }
     }
 
     if (Object.keys(errs).length > 0) {
@@ -397,6 +458,8 @@ export function StartPoolPage() {
         categorySpecs: specs,
         primaryOptionLabel: primaryLabel,
         primaryOptionValues: primaryValues,
+        vehicleSpecs:
+          selectedCategory === 'Vehicles' ? buildVehicleSpecProfileFromDraft(draft) : undefined,
       });
       window.localStorage.removeItem(storageKey);
       setPublishedPoolId(poolId);
@@ -908,32 +971,11 @@ export function StartPoolPage() {
             )}
 
             {draft.category === 'Vehicles' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="veh-model" className="block font-mono text-[11px] uppercase text-[#516B61]">
-                    Model &amp; year
-                  </label>
-                  <input
-                    id="veh-model"
-                    value={draft.vehModel}
-                    onChange={(e) => updateField('vehModel', e.target.value)}
-                    placeholder="e.g., 2026 Ford Maverick Hybrid"
-                    className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="veh-trim" className="block font-mono text-[11px] uppercase text-[#516B61]">
-                    Trim &amp; drivetrain
-                  </label>
-                  <input
-                    id="veh-trim"
-                    value={draft.vehTrim}
-                    onChange={(e) => updateField('vehTrim', e.target.value)}
-                    placeholder="e.g., XLT FWD or Lariat AWD"
-                    className="mt-1 w-full h-10 px-3 bg-white border border-[#C6D8CE] text-sm"
-                  />
-                </div>
-              </div>
+              <VehicleSpecsFormFields
+                draft={draft}
+                updateField={updateField}
+                fieldErrors={fieldErrors}
+              />
             )}
 
             {draft.category === 'Apartments' && (
@@ -1275,6 +1317,23 @@ export function StartPoolPage() {
               <h2 className="font-display text-xl text-[#152B23] uppercase">
                 {draft.title.trim() || 'Your buying pool title'}
               </h2>
+              {draft.category === 'Vehicles' && (
+                <p className="mt-1 text-xs font-medium text-[#1E4334]">
+                  {draft.vehAssetClass === 'accessory'
+                    ? 'Vehicle accessory / equipment (not a motor vehicle)'
+                    : [
+                        draft.vehType ? getVehicleTypeLabel(draft.vehType, true) : 'Vehicle type not specified',
+                        draft.vehCondition === 'new'
+                          ? 'New'
+                          : draft.vehCondition === 'used'
+                            ? 'Used'
+                            : null,
+                        modelOrVariant || null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                </p>
+              )}
               <p className="mt-1 text-xs text-[#516B61]">
                 {draft.location || 'Location'} · Target{' '}
                 {draft.goalDate ? formatCalendarDate(draft.goalDate) : 'date'}

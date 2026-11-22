@@ -30,9 +30,12 @@ import {
   getStageToneClasses,
 } from '../lib/format.ts';
 import { Link, useRouter } from '../lib/router.tsx';
+import { evaluateQuoteCompatibility } from '../domain/vehicleEngine.ts';
 import { CompetingPoolsComparison } from '../components/CompetingPoolsComparison.tsx';
+import { PlacementBadges } from '../components/PlacementBadges.tsx';
 import { PoolImage } from '../components/PoolImage.tsx';
 import { SegmentedTally } from '../components/SegmentedTally.tsx';
+import { VehicleSpecsDisplay } from '../components/VehicleSpecsDisplay.tsx';
 
 export function PoolDetailPage({ poolId }: { poolId: string }) {
   const {
@@ -436,6 +439,8 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
             </Link>
           )}
         </div>
+
+        <PlacementBadges pool={pool} variant="detail" showDisclosurePanel />
 
         {/* Clean 3-Step Stage Sequence */}
         <ol
@@ -1157,8 +1162,26 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
               )}
             </div>
 
-            {pool.currentOffer ? (
+            {pool.currentOffer ? (() => {
+              const quoteCompat = evaluateQuoteCompatibility(pool, pool.currentOffer);
+              return (
               <div className="space-y-3">
+                {!quoteCompat.compatible && (
+                  <div
+                    role="alert"
+                    className="p-3 bg-[#FDF4F2] border border-[#A63A2B] text-xs text-[#A63A2B] space-y-1"
+                  >
+                    <p className="font-mono text-[11px] font-semibold uppercase flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      <span>Quote conflicts with required pool specifications</span>
+                    </p>
+                    <ul className="list-disc pl-4 space-y-0.5 text-[#152B23]">
+                      {quoteCompat.conflicts.map((c, idx) => (
+                        <li key={idx}>{c}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-baseline justify-between gap-2 pb-2.5 border-b border-[#CDD6CC]">
                   <div>
                     <p className="font-semibold text-sm text-[#152B23]">
@@ -1172,7 +1195,11 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
                     <p className="text-xl font-bold text-[#152B23]">
                       {formatCurrency(pool.currentOffer.subtotal)}
                     </p>
-                    <p className="text-[11px] text-[#4E6359]">subtotal before tax/registration</p>
+                    <p className="text-[11px] text-[#4E6359]">
+                      {pool.currentOffer.knownFeesUnknown
+                        ? 'base + fixed fees (excludes TBD fees & tax)'
+                        : 'subtotal before tax/registration'}
+                    </p>
                   </div>
                 </div>
 
@@ -1189,6 +1216,7 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
                     </dt>
                     <dd className="mt-0.5 font-mono font-semibold text-[#152B23] tabular-nums">
                       {formatCurrency(pool.currentOffer.knownFees)}
+                      {pool.currentOffer.knownFeesUnknown ? ' + TBD items' : ''}
                     </dd>
                   </div>
                   <div className="p-2.5 bg-white border border-[#CDD6CC]">
@@ -1227,7 +1255,8 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
                   </Link>
                 </div>
               </div>
-            ) : (
+              );
+            })() : (
               <div className="space-y-1.5">
                 <p className="font-mono text-xs font-semibold uppercase tracking-wider text-[#152B23]">
                   No quote published yet
@@ -1260,7 +1289,11 @@ export function PoolDetailPage({ poolId }: { poolId: string }) {
               </span>
             </div>
 
-            {pool.categorySpecs.length > 0 && (
+            {pool.category === 'Vehicles' && (
+              <VehicleSpecsDisplay specs={pool.vehicleSpecs} />
+            )}
+
+            {pool.category !== 'Vehicles' && pool.categorySpecs.length > 0 && (
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 {pool.categorySpecs.map((spec) => (
                   <div key={spec.label} className="p-3 bg-[#F7F5EE] border border-[#CDD6CC]">

@@ -28,7 +28,9 @@ import {
   getStageLabel,
   getStageToneClasses,
 } from '../lib/format.ts';
+import { getVehicleTypeLabel, isAccessoryPool } from '../domain/vehicleEngine.ts';
 import { Link } from '../lib/router.tsx';
+import { PlacementBadges } from './PlacementBadges.tsx';
 import { SegmentedTally } from './SegmentedTally.tsx';
 
 export interface ComparisonQuerySummary {
@@ -249,24 +251,34 @@ function CandidateCard({
       }`}
     >
       {/* Top Hierarchy: Quiet Unboxed Match Kicker + Single Crisp Stage Badge */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#CDD6CC]/80">
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-wider">
-          <span className={getMatchToneText(candidate.matchLevel, unavailable)}>
-            {candidate.matchLabel}
-          </span>
-          <span aria-hidden="true" className="text-[#8C9A86]">
-            ·
-          </span>
-          <span className="text-[#4E6359]">{pool.category}</span>
-        </div>
+      <div className="space-y-2 pb-3 border-b border-[#CDD6CC]/80">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-wider">
+            <span className={getMatchToneText(candidate.matchLevel, unavailable)}>
+              {candidate.matchLabel}
+            </span>
+            <span aria-hidden="true" className="text-[#8C9A86]">
+              ·
+            </span>
+            <span className="text-[#4E6359]">
+              {pool.category}
+              {pool.category === 'Vehicles' && isAccessoryPool(pool)
+                ? ' · Accessory'
+                : pool.category === 'Vehicles' && pool.vehicleSpecs?.vehicleType
+                  ? ` · ${getVehicleTypeLabel(pool.vehicleSpecs.vehicleType, true)}`
+                  : ''}
+            </span>
+          </div>
 
-        <span
-          className={`px-2.5 py-0.5 border font-mono text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap shrink-0 ${getStageToneClasses(
-            stage
-          )}`}
-        >
-          {getStageLabel(stage)}
-        </span>
+          <span
+            className={`px-2.5 py-0.5 border font-mono text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap shrink-0 ${getStageToneClasses(
+              stage
+            )}`}
+          >
+            {getStageLabel(stage)}
+          </span>
+        </div>
+        <PlacementBadges pool={pool} variant="card" />
       </div>
 
       {/* Item, Meaningful Variant, Location & Purchase Window */}
@@ -353,6 +365,18 @@ function CandidateCard({
       {/* Published Seller Quote vs Honest No-Quote State */}
       {quoteSummary.hasQuote && quoteSummary.subtotal !== undefined ? (
         <div className="p-4 bg-[#F6F1E5] border border-[#1E4334]/35 space-y-2">
+          {quoteSummary.hasSpecConflicts && quoteSummary.specConflicts && quoteSummary.specConflicts.length > 0 && (
+            <div
+              role="alert"
+              className="p-2.5 bg-[#FDF4F2] border border-[#A63A2B] text-xs text-[#A63A2B] space-y-1"
+            >
+              <p className="font-mono text-[10px] font-semibold uppercase flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>Quote conflicts with required pool specifications</span>
+              </p>
+              <p className="text-[#152B23]">{quoteSummary.specConflicts.join(' ')}</p>
+            </div>
+          )}
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <span className="inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#1E4334]">
               <Tag className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -361,15 +385,20 @@ function CandidateCard({
               </span>
             </span>
             <span className="font-mono text-base font-bold text-[#152B23] tabular-nums">
-              {formatCurrency(quoteSummary.subtotal)} subtotal
+              {formatCurrency(quoteSummary.subtotal)}
+              {quoteSummary.knownFeesUnknown ? ' + TBD fees' : ' subtotal'}
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-[#152B23]">
             <p className="font-mono text-[11px] tabular-nums">
               Unit price: <strong>{formatCurrency(quoteSummary.unitPrice ?? 0)}</strong>
-              {quoteSummary.knownFees && quoteSummary.knownFees > 0
-                ? ` + ${formatCurrency(quoteSummary.knownFees)} ${quoteSummary.feeLabel || 'fees'}`
-                : ' · $0 seller fees'}
+              {quoteSummary.knownFeesUnknown
+                ? quoteSummary.knownFees && quoteSummary.knownFees > 0
+                  ? ` + ${formatCurrency(quoteSummary.knownFees)} fixed fees + TBD items`
+                  : ' · Additional fees TBD / unknown'
+                : quoteSummary.knownFees && quoteSummary.knownFees > 0
+                  ? ` + ${formatCurrency(quoteSummary.knownFees)} ${quoteSummary.feeLabel || 'fees'}`
+                  : ' · $0 seller fees'}
             </p>
             <p className="font-mono text-[11px] text-[#4E6359] tabular-nums">
               Applies to {quoteSummary.minQuantity}–{quoteSummary.maxQuantity} {pool.unitPlural}
@@ -669,21 +698,31 @@ function ReferenceOnlyCard({ reference }: { reference: SimilarPoolReference }) {
       aria-label={`Reference only pool: ${pool.title}`}
       className="bg-[#F6F4EC] border border-[#8C9A86] p-4 sm:p-5 space-y-3"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#CDD6CC]">
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
-          <span className="font-semibold text-[#A63A2B]">{reference.reasonLabel}</span>
-          <span aria-hidden="true" className="text-[#8C9A86]">
-            ·
+      <div className="space-y-2 pb-2 border-b border-[#CDD6CC]">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
+            <span className="font-semibold text-[#A63A2B]">{reference.reasonLabel}</span>
+            <span aria-hidden="true" className="text-[#8C9A86]">
+              ·
+            </span>
+            <span className="text-[#4E6359]">
+              {pool.category}
+              {pool.category === 'Vehicles' && isAccessoryPool(pool)
+                ? ' · Accessory'
+                : pool.category === 'Vehicles' && pool.vehicleSpecs?.vehicleType
+                  ? ` · ${getVehicleTypeLabel(pool.vehicleSpecs.vehicleType, true)}`
+                  : ''}
+            </span>
+          </div>
+          <span
+            className={`px-2 py-0.5 border font-mono text-[10px] font-semibold uppercase tracking-wider ${getStageToneClasses(
+              stage
+            )}`}
+          >
+            {getStageLabel(stage)}
           </span>
-          <span className="text-[#4E6359]">{pool.category}</span>
         </div>
-        <span
-          className={`px-2 py-0.5 border font-mono text-[10px] font-semibold uppercase tracking-wider ${getStageToneClasses(
-            stage
-          )}`}
-        >
-          {getStageLabel(stage)}
-        </span>
+        <PlacementBadges pool={pool} variant="card" />
       </div>
 
       <div className="space-y-1">
@@ -692,7 +731,7 @@ function ReferenceOnlyCard({ reference }: { reference: SimilarPoolReference }) {
         <p className="font-mono text-[11px] text-[#4E6359]">
           {pool.location} · Target {formatCalendarDate(pool.goalDate)} ·{' '}
           {quoteSummary.hasQuote && quoteSummary.subtotal !== undefined
-            ? `${formatCurrency(quoteSummary.subtotal)} subtotal (${quoteSummary.sellerName})`
+            ? `${formatCurrency(quoteSummary.subtotal)}${quoteSummary.knownFeesUnknown ? ' + TBD fees' : ' subtotal'} (${quoteSummary.sellerName})`
             : 'No quote published yet'}
         </p>
       </div>

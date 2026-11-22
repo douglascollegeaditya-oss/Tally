@@ -34,6 +34,7 @@ import {
   recalculatePoolDemand,
   requestSellerQuote,
   sanitizePoolForRole,
+  setDemoPoolPlacement,
   simulateAnotherConfirmation,
   simulateSellerTermRevision,
   toggleFollowPool,
@@ -47,6 +48,10 @@ import {
   type PoolCategory,
   type PoolSpecField,
 } from './src/domain/types.ts';
+import {
+  stripUntrustedPlacementFields,
+  validateVehicleSpecs,
+} from './src/domain/vehicleEngine.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -270,12 +275,14 @@ async function startServer() {
     withSession((req, res, state, role) => {
       const actor = PERSONAS[role];
       const headerReqId = req.header('idempotency-key');
-      const bodyPayload =
-        req.body && typeof req.body === 'object' ? { ...req.body } : {};
+      // Defense-in-depth: strip any untrusted certification or paid placement fields from public client payloads
+      const bodyPayload = stripUntrustedPlacementFields(
+        req.body && typeof req.body === 'object' ? { ...req.body } : {}
+      );
       if (typeof headerReqId === 'string' && headerReqId.trim().length > 0 && !bodyPayload.clientRequestId) {
         bodyPayload.clientRequestId = headerReqId.trim();
       }
-      const outcome = createPool(state, actor, bodyPayload);
+      const outcome = createPool(state, actor, bodyPayload as never);
       if (!outcome.ok) {
         res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
         return;
@@ -358,6 +365,9 @@ async function startServer() {
             .slice(0, 12)
         : undefined;
 
+      const vehCheck = validateVehicleSpecs(body.vehicleSpecs);
+      const vehicleSpecs = vehCheck.sanitized;
+
       const queryInput = {
         category,
         title,
@@ -366,6 +376,7 @@ async function startServer() {
         modelOrVariant,
         primaryOptionValues,
         categorySpecs,
+        vehicleSpecs,
         excludePoolId,
         includeUnavailable: body.includeUnavailable !== false,
       };
@@ -643,6 +654,7 @@ async function startServer() {
         goalDate: pool.goalDate,
         sharedRequirements: pool.sharedRequirements,
         categorySpecs: pool.categorySpecs,
+        vehicleSpecs: pool.vehicleSpecs,
         organizerName: pool.organizerName,
         organizerNote: pool.organizerNote,
         quoteRequestedAt: pool.quoteRequestedAt,
@@ -674,9 +686,21 @@ async function startServer() {
         matchingScope: String(req.body?.matchingScope ?? ''),
         currency: 'USD',
         unitPrice: Number(req.body?.unitPrice),
-        knownFees: Number(req.body?.knownFees),
+        knownFees: Number(req.body?.knownFees ?? 0),
+        knownFeesUnknown: Boolean(req.body?.knownFeesUnknown),
+        itemizedFees: Array.isArray(req.body?.itemizedFees) ? req.body.itemizedFees : undefined,
         feeLabel: String(req.body?.feeLabel ?? ''),
         taxAndRegistrationNote: String(req.body?.taxAndRegistrationNote ?? ''),
+        taxTreatment:
+          typeof req.body?.taxTreatment === 'string' ? req.body.taxTreatment : undefined,
+        paymentTerms:
+          typeof req.body?.paymentTerms === 'string' ? req.body.paymentTerms : undefined,
+        includedItems: Array.isArray(req.body?.includedItems) ? req.body.includedItems : undefined,
+        excludedItems: Array.isArray(req.body?.excludedItems) ? req.body.excludedItems : undefined,
+        quotedVehicle:
+          req.body?.quotedVehicle && typeof req.body.quotedVehicle === 'object'
+            ? req.body.quotedVehicle
+            : undefined,
         minQuantity: Number(req.body?.minQuantity),
         maxQuantity: Number(req.body?.maxQuantity),
         fulfillmentMethod: String(req.body?.fulfillmentMethod ?? ''),
@@ -865,6 +889,44 @@ async function startServer() {
       saveSession(outcome.state);
       res.json({
         offer: outcome.data.offer,
+        session: buildClientSessionResponse(outcome.state, role),
+      });
+    })
+  );
+
+  // Demo Controls (Demo-only admin simulation): Toggle Tally Certified / Paid Featured flags
+  // Scoped strictly to the isolated demo session; ordinary /api/pools creation never sets these fields.
+  app.post(
+    '/api/demo/pool-placement',
+    withSession((req, res, state, role) => {
+      const poolId = typeof req.body?.poolId === 'string' ? req.body.poolId.trim() : '';
+      if (!poolId) {
+        res.status(400).json({
+          error: { code: 'VALIDATION_ERROR', message: 'Select a pool to update demo placement flags.' },
+        });
+        return;
+      }
+      const outcome = setDemoPoolPlacement(state, poolId, {
+        ...(typeof req.body?.tallyCertified === 'boolean'
+          ? { tallyCertified: req.body.tallyCertified }
+          : {}),
+        ...(typeof req.body?.partnerDealerLabel === 'string'
+          ? { partnerDealerLabel: req.body.partnerDealerLabel }
+          : {}),
+        ...(typeof req.body?.paidFeatured === 'boolean'
+          ? { paidFeatured: req.body.paidFeatured }
+          : {}),
+        ...(typeof req.body?.sponsorName === 'string'
+          ? { sponsorName: req.body.sponsorName }
+          : {}),
+      });
+      if (!outcome.ok) {
+        res.status(statusFromErrorCode(outcome.error.code)).json({ error: outcome.error });
+        return;
+      }
+      saveSession(outcome.state);
+      res.json({
+        poolId: outcome.data.pool.id,
         session: buildClientSessionResponse(outcome.state, role),
       });
     })

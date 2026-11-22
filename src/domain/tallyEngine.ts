@@ -26,6 +26,14 @@ import type {
   SellerOffer,
   VariantBreakdownRow,
 } from './types.ts';
+import {
+  buildTrustedPaidPlacement,
+  buildTrustedTallyCertification,
+  buildVehicleCategorySpecs,
+  normalizeQuoteItemizedFees,
+  stripUntrustedPlacementFields,
+  validateVehicleSpecs,
+} from './vehicleEngine.ts';
 
 function cloneState(state: DemoSessionState): DemoSessionState {
   return migrateSessionState(JSON.parse(JSON.stringify(state)) as DemoSessionState);
@@ -588,8 +596,13 @@ export function postDiscussionMessage(
 export function createPool(
   state: DemoSessionState,
   actor: PersonaIdentity,
-  input: CreatePoolInput
+  rawInput: CreatePoolInput
 ): EngineOutcome<{ pool: Pool; deduplicated?: boolean }> {
+  // Always strip any untrusted client-supplied certification/paid placement fields
+  const input = stripUntrustedPlacementFields(
+    rawInput as unknown as Record<string, unknown>
+  ) as unknown as CreatePoolInput;
+
   const cleanRequestId =
     typeof input.clientRequestId === 'string' && input.clientRequestId.trim().length > 0
       ? input.clientRequestId.trim().slice(0, 64)
@@ -636,6 +649,14 @@ export function createPool(
     fieldErrors.sharedRequirements = 'List at least one shared requirement for compatible demand.';
   }
 
+  const vehValidation =
+    input.category === 'Vehicles'
+      ? validateVehicleSpecs(input.vehicleSpecs)
+      : { valid: true, errors: {}, sanitized: undefined };
+  if (!vehValidation.valid) {
+    Object.assign(fieldErrors, vehValidation.errors);
+  }
+
   if (Object.keys(fieldErrors).length > 0) {
     return {
       ok: false,
@@ -661,6 +682,26 @@ export function createPool(
       ? input.primaryOptionValues.map((v) => v.trim()).filter(Boolean)
       : ['Matches shared spec'];
 
+  const explicitCategorySpecs = Array.isArray(input.categorySpecs)
+    ? input.categorySpecs.filter((s) => s.label.trim() && s.value.trim())
+    : [];
+  const generatedVehSpecs =
+    input.category === 'Vehicles' && vehValidation.sanitized
+      ? buildVehicleCategorySpecs(
+          vehValidation.sanitized,
+          input.deliveryOrDestination.trim() || input.location.trim()
+        )
+      : [];
+  const mergedSpecsMap = new Map<string, { label: string; value: string }>();
+  for (const row of generatedVehSpecs) {
+    mergedSpecsMap.set(row.label.toLowerCase(), row);
+  }
+  for (const row of explicitCategorySpecs) {
+    if (!mergedSpecsMap.has(row.label.toLowerCase())) {
+      mergedSpecsMap.set(row.label.toLowerCase(), row);
+    }
+  }
+
   const newPool: Pool = {
     id,
     slug: id,
@@ -684,9 +725,8 @@ export function createPool(
       input.organizerNote.trim() ||
       'Pooling compatible local buyers to request one clear, itemized seller quote.',
     sharedRequirements: cleanReqs,
-    categorySpecs: Array.isArray(input.categorySpecs)
-      ? input.categorySpecs.filter((s) => s.label.trim() && s.value.trim())
-      : [],
+    categorySpecs: Array.from(mergedSpecsMap.values()),
+    ...(vehValidation.sanitized ? { vehicleSpecs: vehValidation.sanitized } : {}),
     optionGroups: [
       {
         id: 'primary',
@@ -882,7 +922,27 @@ export function publishOrReviseSellerOffer(
   if (!Number.isFinite(input.unitPrice) || input.unitPrice <= 0) {
     fieldErrors.unitPrice = 'Unit price must be greater than $0.';
   }
-  if (!Number.isFinite(input.knownFees) || input.knownFees < 0) {
+  const itemizedFeesResult = normalizeQuoteItemizedFees(input.itemizedFees);
+  if (!itemizedFeesResult.valid) {
+    fieldErrors.itemizedFees = itemizedFeesResult.error || 'Check itemized fee entries.';
+  }
+
+  const quotedVehValidation =
+    pool.category === 'Vehicles' && input.quotedVehicle
+      ? validateVehicleSpecs(input.quotedVehicle)
+      : { valid: true, errors: {}, sanitized: undefined };
+  if (!quotedVehValidation.valid) {
+    Object.assign(fieldErrors, quotedVehValidation.errors);
+  }
+
+  const effectiveKnownFees = itemizedFeesResult.items
+    ? itemizedFeesResult.fixedTotal
+    : input.knownFees;
+  const effectiveKnownFeesUnknown = Boolean(
+    input.knownFeesUnknown || itemizedFeesResult.hasUnknown
+  );
+
+  if (!effectiveKnownFeesUnknown && (!Number.isFinite(effectiveKnownFees) || effectiveKnownFees < 0)) {
     fieldErrors.knownFees = 'Known fees cannot be negative.';
   }
   if (!input.feeLabel || input.feeLabel.trim().length < 2) {
@@ -936,6 +996,7 @@ export function publishOrReviseSellerOffer(
       version: previousOffer.version,
       unitPrice: previousOffer.unitPrice,
       knownFees: previousOffer.knownFees,
+      knownFeesUnknown: previousOffer.knownFeesUnknown,
       feeLabel: previousOffer.feeLabel,
       subtotal: previousOffer.subtotal,
       minQuantity: previousOffer.minQuantity,
@@ -948,7 +1009,8 @@ export function publishOrReviseSellerOffer(
     });
   }
 
-  const subtotal = Math.round((input.unitPrice + input.knownFees) * 100) / 100;
+  const safeKnownFees = Number.isFinite(effectiveKnownFees) && effectiveKnownFees >= 0 ? effectiveKnownFees : 0;
+  const subtotal = Math.round((input.unitPrice + safeKnownFees) * 100) / 100;
 
   let diffText = input.revisionSummary?.trim();
   if (isRevision && previousOffer && !diffText) {
@@ -958,9 +1020,11 @@ export function publishOrReviseSellerOffer(
         `unit price $${previousOffer.unitPrice.toLocaleString()} → $${input.unitPrice.toLocaleString()}`
       );
     }
-    if (previousOffer.knownFees !== input.knownFees) {
+    if (previousOffer.knownFees !== safeKnownFees || previousOffer.knownFeesUnknown !== effectiveKnownFeesUnknown) {
       changes.push(
-        `fees $${previousOffer.knownFees.toLocaleString()} → $${input.knownFees.toLocaleString()}`
+        `fees $${previousOffer.knownFees.toLocaleString()} → $${safeKnownFees.toLocaleString()}${
+          effectiveKnownFeesUnknown ? ' (+ unknown/TBD items)' : ''
+        }`
       );
     }
     if (previousOffer.minQuantity !== input.minQuantity) {
@@ -975,6 +1039,24 @@ export function publishOrReviseSellerOffer(
         : 'Terms revised by seller. Prior confirmations require reconfirmation.';
   }
 
+  const cleanList = (arr: unknown): string[] | undefined => {
+    if (!Array.isArray(arr)) return undefined;
+    const cleaned = arr
+      .map((item) => (typeof item === 'string' ? item.trim().slice(0, 140) : ''))
+      .filter(Boolean)
+      .slice(0, 12);
+    return cleaned.length > 0 ? cleaned : undefined;
+  };
+
+  const includedItems = cleanList(input.includedItems);
+  const excludedItems = cleanList(input.excludedItems);
+  const paymentTerms = typeof input.paymentTerms === 'string' && input.paymentTerms.trim()
+    ? input.paymentTerms.trim().slice(0, 220)
+    : undefined;
+  const taxTreatment = typeof input.taxTreatment === 'string' && input.taxTreatment.trim()
+    ? input.taxTreatment.trim().slice(0, 220)
+    : undefined;
+
   const newOffer: SellerOffer = {
     version: nextVersion,
     sellerName: input.sellerName.trim(),
@@ -982,11 +1064,20 @@ export function publishOrReviseSellerOffer(
     matchingScope: input.matchingScope.trim(),
     currency: 'USD',
     unitPrice: input.unitPrice,
-    knownFees: input.knownFees,
+    knownFees: safeKnownFees,
+    ...(effectiveKnownFeesUnknown ? { knownFeesUnknown: true } : {}),
+    ...(itemizedFeesResult.items ? { itemizedFees: itemizedFeesResult.items } : {}),
     feeLabel: input.feeLabel.trim(),
     subtotal,
     taxAndRegistrationNote:
-      input.taxAndRegistrationNote.trim() || 'Excludes applicable state tax and registration.',
+      input.taxAndRegistrationNote.trim() ||
+      taxTreatment ||
+      'Tax, title, and registration treatment not stated by seller.',
+    ...(taxTreatment ? { taxTreatment } : {}),
+    ...(paymentTerms ? { paymentTerms } : {}),
+    ...(includedItems ? { includedItems } : {}),
+    ...(excludedItems ? { excludedItems } : {}),
+    ...(quotedVehValidation.sanitized ? { quotedVehicle: quotedVehValidation.sanitized } : {}),
     minQuantity: input.minQuantity,
     maxQuantity: input.maxQuantity,
     fulfillmentMethod: input.fulfillmentMethod.trim(),
@@ -1587,3 +1678,52 @@ export function applyFordScenario(
 
   return next;
 }
+
+/**
+ * Demo-only server-side admin simulation to toggle Tally Certified bulk deal
+ * and Paid Featured placement flags on a pool within the isolated demo session.
+ * Public pool creation / editing routes NEVER allow setting these fields.
+ */
+export function setDemoPoolPlacement(
+  state: DemoSessionState,
+  poolId: string,
+  patch: {
+    tallyCertified?: boolean;
+    partnerDealerLabel?: string;
+    paidFeatured?: boolean;
+    sponsorName?: string;
+  }
+): EngineOutcome<{ pool: Pool }> {
+  const next = cloneState(state);
+  const pool = next.pools.find((p) => p.id === poolId);
+  if (!pool) {
+    return { ok: false, error: { code: 'NOT_FOUND', message: 'Pool not found.' } };
+  }
+
+  if (typeof patch.tallyCertified === 'boolean') {
+    if (patch.tallyCertified) {
+      pool.tallyCertification = buildTrustedTallyCertification(
+        'tally_demo_admin',
+        patch.partnerDealerLabel || pool.tallyCertification?.partnerDealerLabel || 'Participating Demo Dealer (Fictional)'
+      );
+    } else {
+      delete pool.tallyCertification;
+    }
+  }
+
+  if (typeof patch.paidFeatured === 'boolean') {
+    if (patch.paidFeatured) {
+      pool.paidPlacement = buildTrustedPaidPlacement(
+        'tally_demo_admin',
+        patch.sponsorName || pool.paidPlacement?.sponsorName || 'Fictional Demo Sponsor'
+      );
+    } else {
+      delete pool.paidPlacement;
+    }
+  }
+
+  pool.updatedAt = next.demoNow;
+  next.updatedAt = next.demoNow;
+  return { ok: true, data: { pool }, state: next };
+}
+
